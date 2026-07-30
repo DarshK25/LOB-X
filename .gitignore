@@ -1,0 +1,69 @@
+# ─── C++ build artifacts ──────────────────────────────────────────────────────
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+CTestTestfile.cmake
+_CPack_Packages/
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.env
+*.egg-info/
+dist/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.cover
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+frontend/dist/
+frontend/.env.local
+frontend/.env.production
+
+# ─── Secrets / env ────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Data / large files ───────────────────────────────────────────────────────
+data/
+*.csv
+*.parquet
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+papers/*.pdf
+
+# ─── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
