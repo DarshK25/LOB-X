@@ -1,0 +1,5 @@
+{
+  "status": "invalidated_placeholder_removed",
+  "reason": "The former kappa=3.0618 and gamma=0.032661 values came from synthetic diagnostic arrays. They are not calibration evidence and must not be used.",
+  "next_step": "Run scripts/analyze_market.py on a fresh complete depth/trade collection. It writes a report only after a positive real-data kappa fit."
+}

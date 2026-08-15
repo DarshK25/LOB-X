@@ -31,9 +31,11 @@ public:
 
     /// Best bid price (highest). Returns nullopt if no bids.
     std::optional<Price> best_bid() const;
+    std::optional<Quantity> best_bid_qty() const;
 
     /// Best ask price (lowest). Returns nullopt if no asks.
     std::optional<Price> best_ask() const;
+    std::optional<Quantity> best_ask_qty() const;
 
     /// Mid-price in ticks (returns nullopt if one side is empty).
     std::optional<double> mid_price() const;

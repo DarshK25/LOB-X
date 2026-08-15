@@ -76,8 +76,12 @@ PYBIND11_MODULE(lobx_cpp, m) {
              "Cancel a resting order by id. Returns True if found.")
         .def("best_bid",        &OrderBook::best_bid,
              "Best bid price (int) or None.")
+        .def("best_bid_qty",    &OrderBook::best_bid_qty,
+             "Quantity at best bid (int) or None.")
         .def("best_ask",        &OrderBook::best_ask,
              "Best ask price (int) or None.")
+        .def("best_ask_qty",    &OrderBook::best_ask_qty,
+             "Quantity at best ask (int) or None.")
         .def("mid_price",       &OrderBook::mid_price,
              "Mid price (float) or None.")
         .def("spread",          &OrderBook::spread,

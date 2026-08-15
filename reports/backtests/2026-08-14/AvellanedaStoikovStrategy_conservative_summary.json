@@ -1,0 +1,46 @@
+{
+  "strategy": "AvellanedaStoikovStrategy",
+  "config": {
+    "name": "conservative",
+    "quote_interval_ms": 100,
+    "markout_horizon_ms": 1000,
+    "flatten_at_end": true,
+    "taker_fee_rate": 0.0005,
+    "execution": {
+      "maker_fee_rate": 0.0002,
+      "latency_ms": 250,
+      "fill_ratio": 0.5,
+      "queue_model": "queue_ahead"
+    },
+    "risk": {
+      "max_position": 0.005,
+      "max_order_qty": 0.001,
+      "max_drawdown": 25.0
+    }
+  },
+  "started_at": 1786704435469,
+  "ended_at": 1786751999914,
+  "depth_events": 475389,
+  "trade_events": 1378952,
+  "summary": {
+    "net_pnl": -23.221476567869647,
+    "gross_pnl": -7.174440499999452,
+    "realized_pnl": -7.174440499999452,
+    "fees_paid": 16.047036067870195,
+    "forced_flatten_fee": 0.13459797925000025,
+    "turnover": 79831.3864016,
+    "fills": 10985,
+    "maker_fill_count": 10984,
+    "maker_filled_qty": 1.26802,
+    "forced_flatten_count": 1,
+    "forced_flatten_qty": 0.004270000000000007,
+    "final_position": 0.0,
+    "max_abs_position": 0.004975000000000003,
+    "mean_abs_position": 0.003866662144023407,
+    "max_drawdown": 25.251405638619687,
+    "mean_1s_markout": -0.0006304593499634585,
+    "markout_observations": 10984,
+    "risk_halted": true,
+    "risk_halt_reason": "max_drawdown"
+  }
+}

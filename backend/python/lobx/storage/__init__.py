@@ -1,9 +1,26 @@
-"""Storage stubs — PostgreSQL and Redis connections."""
+"""Storage sub-package — Parquet writers and database stubs."""
 from __future__ import annotations
+
+from lobx.storage.parquet_writer import (
+    RotatingParquetWriter,
+    TRADE_SCHEMA,
+    DEPTH_SCHEMA,
+    SNAPSHOT_SCHEMA,
+)
+
+__all__ = [
+    "RotatingParquetWriter",
+    "TRADE_SCHEMA",
+    "DEPTH_SCHEMA",
+    "SNAPSHOT_SCHEMA",
+    # Stubs below — implement in Phase 3
+    "PostgresStorage",
+    "RedisStorage",
+]
 
 
 class PostgresStorage:
-    """Stub. Implement with SQLAlchemy async engine."""
+    """Stub. Implement with SQLAlchemy async engine in Phase 3."""
 
     async def save_trade(self, trade_data: dict) -> None:
         raise NotImplementedError
@@ -13,7 +30,7 @@ class PostgresStorage:
 
 
 class RedisStorage:
-    """Stub. Implement with redis-py async client."""
+    """Stub. Implement with redis-py async client in Phase 3."""
 
     async def publish_book_snapshot(self, snapshot: dict) -> None:
         raise NotImplementedError

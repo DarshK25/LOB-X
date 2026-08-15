@@ -1,0 +1,14 @@
+{
+  "depth_file": "data\\fresh_calibration\\depth_2026-08-06.parquet",
+  "depth_sha256": "c74bddfe960027a876498da7cfa14ce965559354a816ff9e99d13e56bfe811d4",
+  "trades_file": "data\\fresh_calibration\\trades_2026-08-06.parquet",
+  "trades_sha256": "24bd5f8444afcc21b132e65633e14a63555bd00355cf6ceddcd73e16d08cc96a",
+  "git_revision": "c212c91b829201f405fb94ab37adee94f824d874",
+  "runs": [
+    {
+      "strategy": "fixed",
+      "scenario": "baseline",
+      "report": "reports\\backtests\\smoke\\FixedSpreadStrategy_baseline_summary.json"
+    }
+  ]
+}

@@ -119,9 +119,19 @@ std::optional<Price> OrderBook::best_bid() const {
     return bids_.begin()->first;
 }
 
+std::optional<Quantity> OrderBook::best_bid_qty() const {
+    if (bids_.empty()) return std::nullopt;
+    return bids_.begin()->second.total_qty();
+}
+
 std::optional<Price> OrderBook::best_ask() const {
     if (asks_.empty()) return std::nullopt;
     return asks_.begin()->first;
+}
+
+std::optional<Quantity> OrderBook::best_ask_qty() const {
+    if (asks_.empty()) return std::nullopt;
+    return asks_.begin()->second.total_qty();
 }
 
 std::optional<double> OrderBook::mid_price() const {

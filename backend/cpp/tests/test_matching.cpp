@@ -12,8 +12,10 @@ TEST_CASE("No match when spread exists", "[matching]") {
     book.add_limit_order(buy(100, 10));
     auto trades = book.add_limit_order(sell(101, 5));
     REQUIRE(trades.empty());
-    REQUIRE(book.best_bid() == 100);
-    REQUIRE(book.best_ask() == 101);
+    REQUIRE(book.best_bid().has_value());
+    REQUIRE(*book.best_bid() == 100);
+    REQUIRE(book.best_ask().has_value());
+    REQUIRE(*book.best_ask() == 101);
 }
 
 TEST_CASE("Full fill: exact price cross", "[matching]") {
@@ -33,7 +35,8 @@ TEST_CASE("Partial fill: aggressor larger than resting", "[matching]") {
     REQUIRE(trades.size() == 1);
     REQUIRE(trades[0].qty == 5);
     // Remainder of sell rests at 100
-    REQUIRE(book.best_ask() == 100);
+    REQUIRE(book.best_ask().has_value());
+    REQUIRE(*book.best_ask() == 100);
     REQUIRE(book.total_ask_qty() == 5);
 }
 
@@ -57,6 +60,7 @@ TEST_CASE("Price-time priority: older order at same level fills first", "[matchi
     auto trades = book.add_limit_order(sell(100, 5));
     REQUIRE(trades.size() == 1);
     REQUIRE(trades[0].buy_id == first_id);   // first in wins
+    (void)second_id;
 }
 
 TEST_CASE("Multi-level sweep: sell walks through bids", "[matching]") {

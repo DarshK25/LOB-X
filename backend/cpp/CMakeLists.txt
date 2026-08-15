@@ -5,19 +5,27 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Use FindPython instead of deprecated FindPythonLibs (suppresses CMP0148 warning).
+set(PYBIND11_FINDPYTHON ON)
+
 # ─── Core static library ──────────────────────────────────────────────────────
 add_library(lobx_core STATIC
     src/order_book.cpp
     src/matching_engine.cpp
 )
 target_include_directories(lobx_core PUBLIC include)
-target_compile_options(lobx_core PRIVATE -O3 -Wall -Wextra)
+if(MSVC)
+    target_compile_options(lobx_core PRIVATE /W4 /O2)
+else()
+    target_compile_options(lobx_core PRIVATE -O3 -Wall -Wextra)
+endif()
 
 # ─── Catch2 tests ─────────────────────────────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
     catch2
     URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.2.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(catch2)
 

@@ -11,7 +11,8 @@ TEST_CASE("Cancel a resting bid", "[cancel]") {
     OrderBook book;
     OrderId id = cid;
     book.add_limit_order(buy(100, 10));
-    REQUIRE(book.best_bid() == 100);
+    REQUIRE(book.best_bid().has_value());
+    REQUIRE(*book.best_bid() == 100);
     REQUIRE(book.cancel(id));
     REQUIRE_FALSE(book.best_bid().has_value());
     REQUIRE(book.empty());
@@ -36,6 +37,7 @@ TEST_CASE("Cancel one of two orders at same level", "[cancel]") {
     book.add_limit_order(buy(100, 5));
     OrderId second = cid;
     book.add_limit_order(buy(100, 8));
+    (void)second;
 
     REQUIRE(book.cancel(first));
     REQUIRE(book.total_bid_qty() == 8);
@@ -43,20 +45,16 @@ TEST_CASE("Cancel one of two orders at same level", "[cancel]") {
 }
 
 TEST_CASE("Cancel removes level entirely when last order cancelled", "[cancel]") {
-    OrderBook book;
-    book.add_limit_order(buy(100, 10));
-    book.add_limit_order(buy(101, 5));
-
-    // Cancel the 100-level order
-    OrderId id_100 = cid - 2;  // first of the two
-    // rebuild with fresh ids to be deterministic
+    // Use fresh book with deterministic ids
     OrderBook book2;
     OrderId a = cid; book2.add_limit_order(buy(101, 5));
     OrderId b = cid; book2.add_limit_order(buy(100, 10));
+    (void)a;
     REQUIRE(book2.bid_levels() == 2);
     REQUIRE(book2.cancel(b));
     REQUIRE(book2.bid_levels() == 1);
-    REQUIRE(book2.best_bid() == 101);
+    REQUIRE(book2.best_bid().has_value());
+    REQUIRE(*book2.best_bid() == 101);
 }
 
 TEST_CASE("Cancel after partial fill: only remaining qty cancelled", "[cancel]") {

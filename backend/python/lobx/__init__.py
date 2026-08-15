@@ -1,19 +1,22 @@
 """
 LOB-X Python package.
 
-Import order matters: lobx_cpp (C++ bindings) must be importable before
-any sub-module that depends on it.  If the pybind11 module hasn't been
-built yet, we raise a clear ImportError rather than a cryptic AttributeError.
+The C++ matching engine (lobx_cpp) is an optional dependency at the package
+level — pure-Python sub-modules (market_data, storage, simulation) can be
+imported and tested without building the C++ extension.
+
+Sub-modules that specifically need the engine (engine_mirror, strategies)
+import lobx_cpp directly and raise a clear error at call-time if it's missing.
+
+LOBX_CPP_AVAILABLE: bool — True once the pybind11 module is built and importable.
 """
 
 try:
     import lobx_cpp  # noqa: F401  — the C++ matching engine
-except ModuleNotFoundError as exc:
-    raise ImportError(
-        "lobx_cpp not found. Build the C++ engine first:\n"
-        "  cd backend/cpp && cmake -B build && cmake --build build"
-    ) from exc
+    LOBX_CPP_AVAILABLE: bool = True
+except ModuleNotFoundError:
+    LOBX_CPP_AVAILABLE = False
 
 from lobx.__version__ import __version__
 
-__all__ = ["__version__", "lobx_cpp"]
+__all__ = ["__version__", "LOBX_CPP_AVAILABLE"]
