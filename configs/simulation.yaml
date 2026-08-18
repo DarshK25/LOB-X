@@ -1,0 +1,36 @@
+environment: simulation
+
+simulation:
+  ticks: 10000
+  tick_ms: 1          # run as fast as possible (no real-time sleep)
+  mid_price: 10000
+  seed: 42
+
+traders:
+  random:
+    count: 5
+    price_offset: 5
+    max_qty: 20
+  momentum:
+    count: 2
+    window: 20
+    qty: 10
+  mean_reversion:
+    count: 2
+    window: 50
+    threshold: 3.0
+  naive_mm:
+    count: 1
+    half_spread: 2
+    qty: 5
+  as_mm:
+    count: 1
+    gamma: 0.1
+    sigma: 1.0
+    kappa: 1.5
+    qty: 5
+
+output:
+  save_trades: true
+  save_book_snapshots: true
+  snapshot_interval: 100   # ticks between snapshots

@@ -1,0 +1,42 @@
+{
+  "strategy": "FixedSpreadStrategy",
+  "config": {
+    "name": "baseline",
+    "quote_interval_ms": 100,
+    "markout_horizon_ms": 1000,
+    "flatten_at_end": true,
+    "taker_fee_rate": 0.0005,
+    "execution": {
+      "maker_fee_rate": 0.0002,
+      "latency_ms": 100,
+      "fill_ratio": 1.0,
+      "queue_model": "shadow"
+    },
+    "risk": {
+      "max_position": 0.005,
+      "max_order_qty": 0.001,
+      "max_drawdown": 25.0
+    }
+  },
+  "started_at": 1786010093914,
+  "ended_at": 1786010392415,
+  "depth_events": 2986,
+  "trade_events": 3823,
+  "summary": {
+    "net_pnl": -0.2887621204797412,
+    "gross_pnl": -0.003894399999741416,
+    "realized_pnl": -0.003894399999741416,
+    "fees_paid": 0.2848677204799998,
+    "forced_flatten_fee": 0.11772418839999987,
+    "turnover": 1071.1660371999997,
+    "fills": 115,
+    "final_position": 0.0,
+    "max_abs_position": 0.004009999999999995,
+    "mean_abs_position": 0.002274420629604826,
+    "max_drawdown": 0.2887621204797412,
+    "mean_1s_markout": -0.00018364736842094238,
+    "markout_observations": 114,
+    "risk_halted": false,
+    "risk_halt_reason": null
+  }
+}

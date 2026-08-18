@@ -1,0 +1,27 @@
+environment: production
+
+database:
+  host: ${POSTGRES_HOST}
+  port: 5432
+  name: ${POSTGRES_DB}
+  user: ${POSTGRES_USER}
+  pool_size: 20
+
+redis:
+  host: ${REDIS_HOST}
+  port: 6379
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  reload: false
+  workers: 4
+
+simulation:
+  tick_ms: 100
+  seed: null
+  mid_price: 10000
+
+logging:
+  level: INFO
+  format: "%(asctime)s %(name)s %(levelname)s %(message)s"

@@ -1,0 +1,5 @@
+{
+  "status": "invalidated_simulated_feature_output_removed",
+  "reason": "The former spread statistics were generated from a simulated normal distribution, not collected depth data.",
+  "next_step": "Regenerate only after scripts/analyze_market.py accepts a real-data calibration."
+}

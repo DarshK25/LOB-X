@@ -1,0 +1,24 @@
+{
+  "depth_file": "data\\raw\\depth_2026-08-14.parquet",
+  "depth_sha256": "5a92db4017c406ce5a2ce6cacc23f1801a06105fdb0df2ae8184ae788e0cbd52",
+  "trades_file": "data\\raw\\trades_2026-08-14.parquet",
+  "trades_sha256": "589d7484b215b254aee5472aa275874dc22f3f65a36f49634aca65bde0585ac0",
+  "git_revision": "c212c91b829201f405fb94ab37adee94f824d874",
+  "runs": [
+    {
+      "strategy": "fixed",
+      "scenario": "baseline",
+      "report": "reports\\backtests\\2026-08-14\\FixedSpreadStrategy_baseline_summary.json"
+    },
+    {
+      "strategy": "as",
+      "scenario": "baseline",
+      "report": "reports\\backtests\\2026-08-14\\AvellanedaStoikovStrategy_baseline_summary.json"
+    },
+    {
+      "strategy": "as",
+      "scenario": "conservative",
+      "report": "reports\\backtests\\2026-08-14\\AvellanedaStoikovStrategy_conservative_summary.json"
+    }
+  ]
+}

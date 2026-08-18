@@ -1,0 +1,28 @@
+2026-08-06 09:54:52.945  INFO      lobx.market_data.collector  Collector starting for BTCUSDT
+2026-08-06 09:54:53.545  INFO      lobx.market_data.binance_ws_client  Connected to wss://data-stream.binance.vision/stream?streams=btcusdt@depth@100ms/btcusdt@trade
+2026-08-06 09:54:53.624  INFO      lobx.market_data.depth_stream_manager  [BTCUSDT] Fetching REST snapshot (limit=1000)…
+2026-08-06 09:54:54.287  INFO      httpx  HTTP Request: GET https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=1000 "HTTP/1.1 200 OK"
+2026-08-06 09:54:54.289  INFO      lobx.market_data.depth_stream_manager  [BTCUSDT] Snapshot received, lastUpdateId=98291829209
+2026-08-06 09:54:54.292  INFO      lobx.market_data.depth_stream_manager  [BTCUSDT] Synced (no residual events). Book has 2000 levels.
+2026-08-06 09:54:54.557  INFO      lobx.market_data.collector  [BTCUSDT] Wrote 2000-level depth snapshot baseline.
+2026-08-06 09:55:07.960  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64693.62×4.2854  ask=64693.63×2.9973  spread=0.01  levels=1023 bid/999 ask  synced=True
+2026-08-06 09:55:22.971  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64681.83×2.7571  ask=64681.84×4.7277  spread=0.01  levels=1017 bid/1047 ask  synced=True
+2026-08-06 09:55:37.981  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64681.83×0.9968  ask=64681.84×4.1922  spread=0.01  levels=1028 bid/1057 ask  synced=True
+2026-08-06 09:55:52.986  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64681.83×2.4895  ask=64681.84×3.5114  spread=0.01  levels=1028 bid/1059 ask  synced=True
+2026-08-06 09:56:07.995  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64684.98×2.5314  ask=64684.99×2.8179  spread=0.01  levels=1048 bid/1038 ask  synced=True
+2026-08-06 09:56:23.001  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64684.98×2.2321  ask=64684.99×3.3479  spread=0.01  levels=1059 bid/1042 ask  synced=True
+2026-08-06 09:56:38.007  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64687.99×5.6143  ask=64688.00×1.6671  spread=0.01  levels=1071 bid/1035 ask  synced=True
+2026-08-06 09:56:53.019  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64688.90×0.7372  ask=64688.91×6.9020  spread=0.01  levels=1059 bid/1045 ask  synced=True
+2026-08-06 09:57:08.034  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64688.90×0.6487  ask=64688.91×9.0280  spread=0.01  levels=1077 bid/1051 ask  synced=True
+2026-08-06 09:57:23.043  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64688.90×2.0683  ask=64688.91×6.3697  spread=0.01  levels=1084 bid/1055 ask  synced=True
+2026-08-06 09:57:38.054  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64688.90×0.7083  ask=64688.91×8.4228  spread=0.01  levels=1080 bid/1056 ask  synced=True
+2026-08-06 09:57:53.061  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64673.88×0.3582  ask=64673.89×8.0163  spread=0.01  levels=1055 bid/1080 ask  synced=True
+2026-08-06 09:58:08.075  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64675.99×5.3767  ask=64676.00×1.3497  spread=0.01  levels=1077 bid/1082 ask  synced=True
+2026-08-06 09:58:23.089  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64685.99×6.8225  ask=64686.00×0.0521  spread=0.01  levels=1129 bid/1055 ask  synced=True
+2026-08-06 09:58:38.092  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64685.99×3.3102  ask=64686.00×2.3622  spread=0.01  levels=1135 bid/1059 ask  synced=True
+2026-08-06 09:58:53.102  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64685.99×3.7706  ask=64686.00×0.7669  spread=0.01  levels=1133 bid/1067 ask  synced=True
+2026-08-06 09:59:08.120  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64685.99×3.7577  ask=64686.00×1.7656  spread=0.01  levels=1137 bid/1066 ask  synced=True
+2026-08-06 09:59:23.129  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64683.61×1.6461  ask=64683.62×6.8318  spread=0.01  levels=1123 bid/1074 ask  synced=True
+2026-08-06 09:59:38.145  INFO      lobx.market_data.collector  [BTCUSDT] heartbeat | bid=64683.61×2.1770  ask=64683.62×5.0038  spread=0.01  levels=1127 bid/1071 ask  synced=True
+2026-08-06 10:00:01.921  INFO      lobx.market_data.collector  Flushing and closing Parquet writers…
+2026-08-06 10:00:01.925  INFO      lobx.market_data.collector  Collector closed.
