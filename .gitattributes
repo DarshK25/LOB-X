@@ -1,0 +1,13 @@
+# Git LFS configuration for LOB-X
+# Handles large Parquet files to avoid GitHub size warnings
+
+# Track all Parquet files with Git LFS
+*.parquet filter=lfs diff=lfs merge=lfs -text
+
+# Also track compressed archives if we ever create backups
+*.tar.gz filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+
+# Binary data files
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.dat filter=lfs diff=lfs merge=lfs -text
