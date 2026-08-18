@@ -51,9 +51,12 @@ frontend/.env.production
 !.env.example
 
 # ─── Data / large files ───────────────────────────────────────────────────────
-data/
+# Keep data/raw/*.parquet for GitHub Actions automated collection
+# (tracked via Git LFS - see .gitattributes)
+data/processed/
+data/backtest/
+data/temp/
 *.csv
-*.parquet
 *.h5
 *.hdf5
 *.pkl

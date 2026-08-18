@@ -1,0 +1,2 @@
+# This file ensures data/raw directory exists in the repo
+# GitHub Actions will write Parquet files here

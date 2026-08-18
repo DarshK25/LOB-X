@@ -1,0 +1,89 @@
+name: Collect Market Data
+
+# OPTIMAL STRATEGY: Every 2 hours, collect for 3 hours = 1 hour overlap
+# This ensures gap-free data even with failures or reconnections
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours: 00:00, 02:00, 04:00, etc.
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 195  # 3h 15min (3h collection + 15min buffer)
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'  # Cache pip dependencies for faster setup
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e backend/python
+    
+    - name: Create data directories
+      run: |
+        mkdir -p data/raw
+        mkdir -p logs
+    
+    - name: Run collector (3 hours with 1h overlap)
+      run: |
+        python scripts/run_collector.py \
+          --duration-seconds 10800 \
+          --data-dir data/raw \
+          --no-engine-mirror \
+          --heartbeat 60 \
+          --log-file logs/collect_$(date +%Y%m%d_%H%M%S).log
+      continue-on-error: false
+    
+    - name: Check collected data size
+      if: always()
+      run: |
+        echo "=== Data Collection Summary ==="
+        du -sh data/raw/ || echo "No data directory"
+        ls -lh data/raw/*.parquet 2>/dev/null || echo "No parquet files yet"
+        echo "=== Log Summary ==="
+        tail -50 logs/collect_*.log 2>/dev/null || echo "No logs"
+    
+    - name: Upload artifacts (30-day retention)
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: market-data-${{ github.run_number }}-${{ github.run_attempt }}
+        path: |
+          data/raw/*.parquet
+          logs/*.log
+        retention-days: 30
+        if-no-files-found: warn
+    
+    - name: Clean old data (keep last 30 days in repo)
+      if: success()
+      run: |
+        # Keep repo size manageable - delete Parquet files older than 30 days
+        # Artifacts still have 30-day retention as backup
+        find data/raw -name "*.parquet" -type f -mtime +30 -delete 2>/dev/null || true
+        find logs -name "*.log" -type f -mtime +30 -delete 2>/dev/null || true
+        echo "Cleaned files older than 30 days"
+    
+    - name: Commit collected data to repo
+      if: success()
+      run: |
+        git config --local user.name "GitHub Actions Bot"
+        git config --local user.email "actions@github.com"
+        git add data/raw/*.parquet logs/*.log
+        if git diff --staged --quiet; then
+          echo "No new data to commit"
+        else
+          git commit -m "chore: collected data $(date -Iseconds) [run ${{ github.run_number }}]"
+          git push
+        fi
+      continue-on-error: true  # Don't fail workflow if commit fails
