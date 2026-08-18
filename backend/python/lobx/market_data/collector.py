@@ -238,9 +238,14 @@ class Collector:
           2. parquet-heartbeat : force-flush Parquet + log live book state every 30 s
         """
         logger.info("Collector starting for %s", self.symbol)
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._ws.run(),           name="ws-receive")
-            tg.create_task(self._heartbeat(),        name="parquet-heartbeat")
+        ws_task = asyncio.create_task(self._ws.run())
+        hb_task = asyncio.create_task(self._heartbeat())
+        try:
+            await asyncio.gather(ws_task, hb_task)
+        except asyncio.CancelledError:
+            ws_task.cancel()
+            hb_task.cancel()
+            raise
 
     def stop(self) -> None:
         """Signal the WebSocket to stop reconnecting."""
