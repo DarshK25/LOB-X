@@ -19,16 +19,23 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Set up Python 3.11
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'  # Cache pip dependencies for faster setup
     
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip setuptools wheel
         pip install -r requirements.txt
-        pip install -e backend/python
+        cd backend/python
+        pip install -e .
+        cd ../..
+    
+    - name: Verify installation
+      run: |
+        python -c "import lobx; print('lobx version:', lobx.__version__)"
+        python -c "from lobx.market_data.collector import Collector; print('Collector imported successfully')"
     
     - name: Create data directories
       run: |
