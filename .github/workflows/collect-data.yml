@@ -1,96 +1,100 @@
 name: Collect Market Data
 
-# OPTIMAL STRATEGY: Every 2 hours, collect for 3 hours = 1 hour overlap
-# This ensures gap-free data even with failures or reconnections
+# ─── Schedule ─────────────────────────────────────────────────────────────────
+# Runs every 3 hours. Each run collects for 3h10m (10m overlap buffer).
+# The concurrency group below ensures at most one collect run is active
+# at a time — new runs queue instead of racing to push.
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours: 00:00, 02:00, 04:00, etc.
-  workflow_dispatch:  # Manual trigger for testing
+    - cron: '0 */3 * * *'   # 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 UTC
+  workflow_dispatch:         # Manual trigger (for testing / backfill)
+
+# ─── Concurrency ──────────────────────────────────────────────────────────────
+# cancel-in-progress: false → new triggers QUEUE behind the running job.
+# This prevents two collectors writing conflicting artifacts simultaneously.
+concurrency:
+  group: market-data-collect
+  cancel-in-progress: false
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
   collect:
+    name: Collect (${{ github.run_number }})
     runs-on: ubuntu-latest
-    timeout-minutes: 195  # 3h 15min (3h collection + 15min buffer)
-    
+    timeout-minutes: 205   # 3h 10m collection + 15m setup buffer
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'  # Cache pip dependencies for faster setup
-    
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip setuptools wheel
-        pip install -r requirements.txt
-        cd backend/python
-        pip install -e .
-        cd ../..
-    
-    - name: Verify installation
-      run: |
-        python -c "import lobx; print('lobx version:', lobx.__version__)"
-        python -c "from lobx.market_data.collector import Collector; print('Collector imported successfully')"
-    
-    - name: Create data directories
-      run: |
-        mkdir -p data/raw
-        mkdir -p logs
-    
-    - name: Run collector (3 hours with 1h overlap)
-      run: |
-        python scripts/run_collector.py \
-          --duration-seconds 10800 \
-          --data-dir data/raw \
-          --no-engine-mirror \
-          --heartbeat 60 \
-          --log-file logs/collect_$(date +%Y%m%d_%H%M%S).log
-      continue-on-error: false
-    
-    - name: Check collected data size
-      if: always()
-      run: |
-        echo "=== Data Collection Summary ==="
-        du -sh data/raw/ || echo "No data directory"
-        ls -lh data/raw/*.parquet 2>/dev/null || echo "No parquet files yet"
-        echo "=== Log Summary ==="
-        tail -50 logs/collect_*.log 2>/dev/null || echo "No logs"
-    
-    - name: Upload artifacts (30-day retention)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: market-data-${{ github.run_number }}-${{ github.run_attempt }}
-        path: |
-          data/raw/*.parquet
-          logs/*.log
-        retention-days: 30
-        if-no-files-found: warn
-    
-    - name: Clean old data (keep last 30 days in repo)
-      if: success()
-      run: |
-        # Keep repo size manageable - delete Parquet files older than 30 days
-        # Artifacts still have 30-day retention as backup
-        find data/raw -name "*.parquet" -type f -mtime +30 -delete 2>/dev/null || true
-        find logs -name "*.log" -type f -mtime +30 -delete 2>/dev/null || true
-        echo "Cleaned files older than 30 days"
-    
-    - name: Commit collected data to repo
-      if: success()
-      run: |
-        git config --local user.name "GitHub Actions Bot"
-        git config --local user.email "actions@github.com"
-        git add data/raw/*.parquet logs/*.log
-        if git diff --staged --quiet; then
-          echo "No new data to commit"
-        else
-          git commit -m "chore: collected data $(date -Iseconds) [run ${{ github.run_number }}]"
-          git push
-        fi
-      continue-on-error: true  # Don't fail workflow if commit fails
+      # ── 1. Checkout ───────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup (3.11 — required for asyncio.TaskGroup) ──────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install dependencies ───────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          cd backend/python
+          pip install -e .
+          cd ../..
+
+      # ── 4. Smoke test the installation ───────────────────────────────────
+      - name: Verify installation
+        run: |
+          python -c "import lobx; print('lobx version:', lobx.__version__)"
+          python -c "from lobx.market_data.collector import Collector; print('Collector OK')"
+          python -c "from lobx.storage.postgres_writer import PostgresTradeWriter; print('PostgresTradeWriter OK')"
+
+      # ── 5. Prepare directories ────────────────────────────────────────────
+      - name: Create data directories
+        run: mkdir -p data/raw logs
+
+      # ── 6. Run collector for 3h10m ────────────────────────────────────────
+      #    --no-engine-mirror: C++ extension not built in CI (no compiler/cmake)
+      #    DATABASE_URL: injected from repo secret for Neon PostgreSQL writes
+      - name: Run collector (3h 10m)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python scripts/run_collector.py \
+            --duration-seconds 11400 \
+            --data-dir data/raw \
+            --no-engine-mirror \
+            --heartbeat 60 \
+            --log-file logs/collect_${{ github.run_number }}.log
+
+      # ── 7. Validate collected data + write GitHub Step Summary ────────────
+      - name: Validate collected data
+        if: always()
+        run: |
+          python scripts/validate_collection.py --data-dir data/raw
+
+      # ── 8. Show log tail for debugging ────────────────────────────────────
+      - name: Show collector log tail
+        if: always()
+        run: |
+          echo "=== Last 80 lines of collector log ==="
+          tail -80 logs/collect_${{ github.run_number }}.log 2>/dev/null || echo "(no log file)"
+
+      # ── 9. Upload Parquet + logs as artifacts ─────────────────────────────
+      #    Artifacts are stored by GitHub for 30 days.
+      #    We do NOT commit Parquet to git — binary blobs pollute git history.
+      #    Trades are ALSO written to Neon PostgreSQL for persistent long-term
+      #    storage and fast SQL queries during calibration.
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-data-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            data/raw/*.parquet
+            logs/*.log
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
