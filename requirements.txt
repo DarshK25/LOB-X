@@ -6,3 +6,6 @@ pandas>=2.2
 numpy>=1.26
 scipy>=1.13
 pybind11>=2.12
+asyncpg>=0.29
+rich>=13.0
+python-dotenv>=1.0

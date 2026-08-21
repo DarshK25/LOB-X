@@ -51,11 +51,14 @@ frontend/.env.production
 !.env.example
 
 # ─── Data / large files ───────────────────────────────────────────────────────
-# Keep data/raw/*.parquet for GitHub Actions automated collection
-# (tracked via Git LFS - see .gitattributes)
+# Parquet and log files are stored as GitHub Artifacts (30-day retention)
+# and in Neon PostgreSQL — never committed to git.
+data/raw/
 data/processed/
 data/backtest/
 data/temp/
+logs/
+*.parquet
 *.csv
 *.h5
 *.hdf5

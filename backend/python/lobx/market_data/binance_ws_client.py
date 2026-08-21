@@ -120,7 +120,7 @@ class BinanceWSClient:
                     if not self._stop:
                         raise OSError("WebSocket stream ended")
 
-            except (websockets.exceptions.ConnectionClosed, OSError) as exc:
+            except Exception as exc:
                 if self._on_disconnect is not None:
                     await self._on_disconnect(exc)
                 logger.warning(

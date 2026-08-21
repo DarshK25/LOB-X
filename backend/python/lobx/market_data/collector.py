@@ -90,6 +90,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -101,6 +102,7 @@ from lobx.storage.parquet_writer import (
     TRADE_SCHEMA,
     RotatingParquetWriter,
 )
+from lobx.storage.postgres_writer import PostgresTradeWriter
 
 if TYPE_CHECKING:
     from lobx.market_data.engine_mirror import EngineMirrorBridge
@@ -172,7 +174,7 @@ class Collector:
                     "Build the C++ extension to enable it (see docs/architecture.md)."
                 )
 
-        # ── Storage ───────────────────────────────────────────────────────────
+        # ── Storage — Parquet (local / artifact) ──────────────────────────────
         # flush_every=500: at BTC/USDT rates (~50 depth rows/s after sync),
         # this flushes every ~10 s.  Files stay readable from another terminal.
         self._trade_writer = RotatingParquetWriter(
@@ -181,6 +183,12 @@ class Collector:
         self._depth_writer = RotatingParquetWriter(
             data_dir, "depth", DEPTH_SCHEMA, flush_every=flush_every
         )
+
+        # ── Storage — PostgreSQL (Neon, persistent long-term) ─────────────────
+        # Trades are also streamed to Neon for persistent SQL-queryable storage.
+        # DATABASE_URL env var must be set (added to GitHub Actions as a secret).
+        # If not set, PostgresTradeWriter is disabled silently — local dev still works.
+        self._pg_writer = PostgresTradeWriter(database_url=os.environ.get("DATABASE_URL"))
 
         # ── Callbacks (register with on_book_update / on_trade) ───────────────
         # These fire AFTER storage writes, so callbacks always see consistent state.
@@ -194,6 +202,10 @@ class Collector:
             on_message=self._on_message,
             on_disconnect=self._on_disconnect,
         )
+
+        self.ws_status = "Disconnected"
+        self.ws_error: str | None = None
+
 
     # ── Callback registration (call BEFORE run()) ─────────────────────────────
 
@@ -233,18 +245,24 @@ class Collector:
         """
         Start the pipeline.  Blocks until stop() is called or KeyboardInterrupt.
 
-        Runs three concurrent asyncio tasks:
+        Runs concurrent asyncio tasks:
           1. ws-receive        : WebSocket receive loop (reconnects automatically)
-          2. parquet-heartbeat : force-flush Parquet + log live book state every 30 s
+          2. parquet-heartbeat : force-flush Parquet + log live book state every N s
         """
         logger.info("Collector starting for %s", self.symbol)
+
+        # Connect to Neon PostgreSQL in the background (no-op if DATABASE_URL is not set)
+        db_task = asyncio.create_task(self._pg_writer.connect())
+
+        self.ws_status = "Connecting..."
         ws_task = asyncio.create_task(self._ws.run())
         hb_task = asyncio.create_task(self._heartbeat())
         try:
-            await asyncio.gather(ws_task, hb_task)
+            await asyncio.gather(ws_task, hb_task, db_task)
         except asyncio.CancelledError:
             ws_task.cancel()
             hb_task.cancel()
+            db_task.cancel()
             raise
 
     def stop(self) -> None:
@@ -260,11 +278,22 @@ class Collector:
         Flush all buffers and close Parquet file handles.
         ALWAYS call this on shutdown (the run_collector.py entrypoint does it
         in a try/finally block — make sure your own scripts do the same).
+
+        Note: Postgres writer is closed via close_async() — the sync close()
+        here handles only Parquet. The run_collector.py entrypoint calls
+        close_async() if an event loop is available.
         """
         logger.info("Flushing and closing Parquet writers…")
         self._trade_writer.close()
         self._depth_writer.close()
-        logger.info("Collector closed.")
+        logger.info("Parquet writers closed.")
+
+    async def close_async(self) -> None:
+        """Flush Postgres buffer and close pool. Call this on graceful shutdown."""
+        self.close()
+        await self._pg_writer.close()
+        logger.info("Collector fully closed (Parquet + PostgreSQL).")
+
 
     # ── Message routing ───────────────────────────────────────────────────────
 
@@ -277,6 +306,8 @@ class Collector:
 
         We strip the envelope and route by stream name.
         """
+        self.ws_status = "Connected"
+        self.ws_error = None
         stream: str = msg.get("stream", "")
         event: dict = msg.get("data", msg)  # fallback: some modes omit the envelope
 
@@ -287,6 +318,8 @@ class Collector:
 
     async def _on_disconnect(self, exc: Exception) -> None:
         """Invalidate depth state before BinanceWSClient reconnects."""
+        self.ws_status = "Disconnected"
+        self.ws_error = str(exc)
         self.depth_mgr.mark_desynced(f"WebSocket disconnected: {exc}")
 
     # ── Depth pipeline ────────────────────────────────────────────────────────
@@ -390,6 +423,7 @@ class Collector:
         """
         tick = parse_trade_event(event)
         self._trade_writer.write(tick.to_dict())
+        self._pg_writer.write(tick)
         for cb in self._trade_cbs:
             try:
                 cb(tick)

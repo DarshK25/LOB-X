@@ -113,8 +113,8 @@ async def _main(args: argparse.Namespace) -> None:
             await run_task
         except asyncio.CancelledError:
             pass
-        print("\nShutting down — flushing Parquet buffers…")
-        collector.close()
+        print("\nShutting down — flushing buffers…")
+        await collector.close_async()
         print("Done. Data written to:", args.data_dir)
 
 
