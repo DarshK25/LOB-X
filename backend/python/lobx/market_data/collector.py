@@ -203,7 +203,7 @@ class Collector:
             on_disconnect=self._on_disconnect,
         )
 
-        self.ws_status = "Disconnected"
+        self.ws_status = "Initializing..."
         self.ws_error: str | None = None
 
 
@@ -251,18 +251,26 @@ class Collector:
         """
         logger.info("Collector starting for %s", self.symbol)
 
-        # Connect to Neon PostgreSQL in the background (no-op if DATABASE_URL is not set)
-        db_task = asyncio.create_task(self._pg_writer.connect())
+        # Connect Postgres sequentially — NOT included in gather().
+        # Keeping it out of gather prevents any SSL/asyncpg exception on Windows
+        # from cancelling the WebSocket task via gather's all-or-nothing propagation.
+        try:
+            await self._pg_writer.connect()
+            if self._pg_writer.is_enabled:
+                logger.info("PostgreSQL (Neon) trade writer connected.")
+            else:
+                logger.info("PostgreSQL writer disabled (DATABASE_URL not set).")
+        except Exception as exc:
+            logger.warning("PostgreSQL connect raised unexpectedly: %s", exc)
 
         self.ws_status = "Connecting..."
         ws_task = asyncio.create_task(self._ws.run())
         hb_task = asyncio.create_task(self._heartbeat())
         try:
-            await asyncio.gather(ws_task, hb_task, db_task)
+            await asyncio.gather(ws_task, hb_task)
         except asyncio.CancelledError:
             ws_task.cancel()
             hb_task.cancel()
-            db_task.cancel()
             raise
 
     def stop(self) -> None:

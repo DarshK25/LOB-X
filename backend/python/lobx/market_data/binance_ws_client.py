@@ -90,22 +90,37 @@ class BinanceWSClient:
         2.  Iterate messages in a tight async loop — no sleep, no polling.
         3.  On disconnect (ConnectionClosed or OSError) wait `backoff` seconds,
             then double `backoff` (capped at MAX_BACKOFF_S).
-        4.  Repeat until self._stop is True.
+        4.  If connection fails, rotate through alternative Binance endpoints 
+            to bypass ISP blocks on specific domains/ports.
+        5.  Repeat until self._stop is True.
         """
         backoff_s = 1
         MAX_BACKOFF_S = 30
+        
+        # Strip the query string so we can rebuild with the new base
+        stream_query = self._url.split("?", 1)[1] if "?" in self._url else ""
+
+        endpoints = [
+            self._url,                                      # primary (e.g. data-stream.binance.vision)
+            f"{BINANCE_WS_PROD}?{stream_query}",            # fallback 1: 9443 prod endpoint
+            f"wss://stream.binance.com:443/stream?{stream_query}" # fallback 2: 443 standard port
+        ]
+        endpoint_idx = 0
+        active_url = endpoints[endpoint_idx]
 
         while not self._stop:
             try:
                 async with websockets.connect(
-                    self._url,
+                    active_url,
                     ping_interval=180,   # send WS ping every 3 min — keeps the conn alive
                     ping_timeout=600,    # wait up to 10 min for pong before declaring dead
-                    open_timeout=15,     # fail fast if server doesn't accept within 15 s
+                    open_timeout=5,      # fail fast (5s) if blocked so we can switch to fallback quickly
                 ) as ws:
                     self._current_ws = ws
-                    logger.info("Connected to %s", self._url)
-                    backoff_s = 1  # clean connect → reset back-off
+                    logger.info("Connected to %s", active_url)
+                    # clean connect → reset failure states
+                    backoff_s = 1
+                    # we don't reset endpoint_idx here, we stick to the one that works!
 
                     async for raw_message in ws:
                         # `async for` yields one str/bytes per WebSocket frame.
@@ -121,15 +136,31 @@ class BinanceWSClient:
                         raise OSError("WebSocket stream ended")
 
             except Exception as exc:
+                # Make the error string more descriptive for the UI
+                err_msg = str(exc)
+                if not err_msg or "time" in err_msg.lower():
+                    err_msg = "Connection timed out (blocked?)"
+                
+                # Pass a standard Exception back so the UI gets a good string
                 if self._on_disconnect is not None:
-                    await self._on_disconnect(exc)
+                    await self._on_disconnect(Exception(err_msg))
                 logger.warning(
                     "Disconnected (%s). Retrying in %d s …", exc, backoff_s
                 )
+
+                # Rotate to the next fallback endpoint immediately
+                endpoint_idx = (endpoint_idx + 1) % len(endpoints)
+                new_url = endpoints[endpoint_idx]
+                logger.warning(
+                    "Switching WebSocket endpoint: %s → %s", active_url, new_url
+                )
+                active_url = new_url
+
                 await asyncio.sleep(backoff_s)
                 backoff_s = min(backoff_s * 2, MAX_BACKOFF_S)
             finally:
                 self._current_ws = None
+
 
     def stop(self) -> None:
         """Signal the run() loop to exit after the next reconnect attempt."""
