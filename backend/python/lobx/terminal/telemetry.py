@@ -13,7 +13,12 @@ from typing import Any, Callable, Deque
 
 @dataclass
 class MarketSnapshot:
-    """Current market state."""
+    """Current market state.
+
+    ``bids``/``asks`` hold top-of-book depth as (price, qty) levels, best first.
+    They are None until real depth is supplied; the terminal shows no book
+    rather than fabricating one.
+    """
     timestamp: int
     mid: float
     best_bid: float
@@ -26,6 +31,8 @@ class MarketSnapshot:
     last_trade_price: float | None = None
     last_trade_side: str | None = None
     last_trade_qty: float | None = None
+    bids: list[tuple[float, float]] | None = None
+    asks: list[tuple[float, float]] | None = None
 
 
 @dataclass
@@ -129,6 +136,9 @@ class TelemetryCollector:
         
         # Callbacks for live updates
         self._callbacks: list[Callable[[TelemetryEvent], None]] = []
+
+        # Highest ShadowQuoteEngine event_id already mirrored into `events`.
+        self._last_event_id = 0
         
     def subscribe(self, callback: Callable[[TelemetryEvent], None]) -> None:
         """Subscribe to telemetry events."""
@@ -195,3 +205,23 @@ class TelemetryCollector:
     def add_trade(self, trade: dict[str, Any]) -> None:
         """Record a market trade event."""
         self.emit(TelemetryEvent("TRADE", trade["timestamp"], trade))
+
+    def sync_events(self, engine_events: list[dict[str, Any]]) -> int:
+        """Mirror new ShadowQuoteEngine ledger events into the event stream.
+
+        The ShadowQuoteEngine ledger is the canonical event source; this copies
+        events not yet seen (by their monotonic ``event_id``) so the terminal
+        renders real transitions rather than a parallel event vocabulary.
+        Returns the number of events ingested.
+        """
+        ingested = 0
+        for event in engine_events:
+            event_id = event.get("event_id", 0)
+            if event_id <= self._last_event_id:
+                continue
+            self.events.append(
+                TelemetryEvent(event["event_type"], event["timestamp"], event)
+            )
+            self._last_event_id = event_id
+            ingested += 1
+        return ingested

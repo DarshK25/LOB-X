@@ -35,6 +35,7 @@ from lobx.analytics.pnl_waterfall import summarize_pnl_waterfall
 if TYPE_CHECKING:
     from lobx.market_data.collector import Collector
     from lobx.market_data.trade_stream import TradeTick
+    from lobx.terminal.telemetry import TelemetryCollector
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +58,14 @@ class StrategyRunner:
         strategy: Strategy,
         execution_assumptions: ExecutionAssumptions | None = None,
         risk_config: MarketMakingRiskConfig | None = None,
+        telemetry: "TelemetryCollector | None" = None,
     ) -> None:
         self.collector     = collector
         self.strategy      = strategy
         self.shadow_engine = ShadowQuoteEngine(assumptions=execution_assumptions or ExecutionAssumptions())
         self.risk_manager  = MarketMakingRiskManager(risk_config)
         self.vol_estimator = EWMAVolatilityEstimator(decay=0.98)
+        self.telemetry     = telemetry
 
         self._tick_count  = 0
         self._last_mid: float | None = None
@@ -170,6 +173,20 @@ class StrategyRunner:
         ask_ahead = book.asks.get(quotes.ask.price, 0.0) if quotes.ask else 0.0
         self.shadow_engine.update_quotes(quotes, state.timestamp, bid_ahead, ask_ahead)
 
+        if self.telemetry is not None:
+            from lobx.terminal.bridge import publish_tick
+            publish_tick(
+                self.telemetry,
+                state=state,
+                strategy_name=self.strategy.name(),
+                quotes=quotes,
+                audit=getattr(self.strategy, "last_quote_audit", {}),
+                engine=self.shadow_engine,
+                mark_price=mid,
+                bids=self._top_depth(book.bids, reverse=True),
+                asks=self._top_depth(book.asks, reverse=False),
+            )
+
         # Periodic status log.
         self._tick_count += 1
         if self._tick_count % LOG_EVERY_N == 0:
@@ -192,9 +209,31 @@ class StrategyRunner:
                 bid_s, ask_s, pos, fills, rpnl, upnl,
             )
 
+    @staticmethod
+    def _top_depth(levels, *, reverse: bool, n: int = 10) -> list[tuple[float, float]]:
+        """Top-N (price, qty) levels, best price first.
+
+        ``levels`` is a price->qty mapping sorted ascending by price (SortedDict).
+        Bids want the highest prices first (reverse=True); asks the lowest.
+        """
+        try:
+            items = list(levels.items())
+        except AttributeError:
+            return []
+        ordered = list(reversed(items)) if reverse else items
+        return [(float(p), float(q)) for p, q in ordered[:n]]
+
     def _on_trade(self, trade: "TradeTick") -> None:
         """Called by Collector after every parsed trade tick."""
         self.shadow_engine.on_trade(trade)
+        if self.telemetry is not None and self._last_mid is not None:
+            from lobx.terminal.bridge import publish_execution
+            publish_execution(
+                self.telemetry,
+                engine=self.shadow_engine,
+                mark_price=self._last_mid,
+                timestamp=trade.event_time,
+            )
 
     # ── Session summary ───────────────────────────────────────────────────────
 

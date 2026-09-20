@@ -251,9 +251,10 @@ class LOBXTerminal:
         
         elif self.current_view == TerminalView.MARKET:
             layout["chart"].update(self.market_view.render())
-            # Mock L2 book (would come from actual depth data)
-            bids = [(100.0 - i * 0.1, 1.5 - i * 0.1) for i in range(5)]
-            asks = [(100.0 + i * 0.1, 1.5 - i * 0.1) for i in range(5)]
+            # Real top-of-book depth from telemetry; empty until depth arrives.
+            market = self.telemetry.market
+            bids = market.bids if market and market.bids else []
+            asks = market.asks if market and market.asks else []
             layout["book"].update(self.l2_view.render(bids, asks))
             layout["events"].update(self.events_view.render())
         
