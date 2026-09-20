@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import math
 from typing import Sequence
-from lobx.analytics.returns import compute_log_returns
 
 
 def compute_realized_variance(returns: Sequence[float]) -> float:

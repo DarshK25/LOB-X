@@ -257,19 +257,37 @@ class DepthStreamManager:
         This runs as an asyncio Task, concurrently with the WS receive loop.
         While it awaits the REST call, new WS events pile up in self._state.buffer
         — that is exactly what we want (step 1 of the algorithm).
-        """
-        logger.info("[%s] Fetching REST snapshot (limit=%d)…", self.symbol, SNAPSHOT_LIMIT)
 
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{REST_BASE}/api/v3/depth",
-                    params={"symbol": self.symbol, "limit": SNAPSHOT_LIMIT},
-                )
-                resp.raise_for_status()
-                snapshot: dict = resp.json()
-        except Exception as exc:
-            logger.error("[%s] REST snapshot failed (%s) — will retry on next event", self.symbol, exc)
+        Retries up to 3 times on failure with a 1-second delay so that transient
+        errors (e.g. Windows event-loop startup race, short network blip) don't
+        stall the sync indefinitely.
+        """
+        # Brief yield so the event loop is fully settled before the first HTTP call.
+        # This prevents the silent failure seen on Windows when httpx fires before
+        # the ProactorEventLoop's SSL context is ready.
+        await asyncio.sleep(0)
+
+        snapshot: dict | None = None
+        for attempt in range(3):
+            logger.info("[%s] Fetching REST snapshot (limit=%d, attempt %d)…", self.symbol, SNAPSHOT_LIMIT, attempt + 1)
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{REST_BASE}/api/v3/depth",
+                        params={"symbol": self.symbol, "limit": SNAPSHOT_LIMIT},
+                    )
+                    resp.raise_for_status()
+                    snapshot = resp.json()
+                    break  # success
+            except Exception as exc:
+                logger.warning("[%s] REST snapshot attempt %d failed (%s)%s",
+                               self.symbol, attempt + 1, exc,
+                               " — retrying in 1s…" if attempt < 2 else " — giving up.")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+
+        if snapshot is None:
+            logger.error("[%s] REST snapshot failed after 3 attempts — will retry on next depth event", self.symbol)
             self._state.syncing = False
             return
 

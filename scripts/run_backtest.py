@@ -14,9 +14,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parents[1] / "backend" / "python"
 if str(_BACKEND) not in sys.path:
@@ -120,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--markout-ms", type=int, default=1000)
     parser.add_argument("--max-position", type=float, default=0.005)
     parser.add_argument("--max-drawdown", type=float, default=25.0)
+    parser.add_argument(
+        "--print-events",
+        action="store_true",
+        help="Print every recorded order, market-trade, and fill event as JSON",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +177,9 @@ def main() -> None:
                 f"net={s['net_pnl']:>9.4f}  maker_qty={s['maker_filled_qty']:>8.4f}  "
                 f"maxDD={s['max_drawdown']:>8.4f}  halted={s['risk_halted']}"
             )
+            if args.print_events:
+                for event in result.events:
+                    print(json.dumps(event, sort_keys=True))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

@@ -7,14 +7,17 @@ silently create a wrong order book.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import pandas as pd
 
 from lobx.analytics.volatility import EWMAVolatilityEstimator
+from lobx.analytics.adverse_selection import classify_markout, summarise_adverse_selection
+from lobx.analytics.pnl_waterfall import summarize_pnl_waterfall
+from lobx.analytics.research import quote_quality
 from lobx.execution.shadow_engine import ExecutionAssumptions, ShadowQuoteEngine
 from lobx.market_data.depth_stream_manager import LocalOrderBook
 from lobx.market_data.trade_stream import TradeTick
@@ -30,11 +33,17 @@ class BacktestConfig:
     every depth event for marking and volatility, but can only cancel/replace
     at this cadence. This is closer to an exchange gateway than reacting to
     every microscopic depth update.
+    
+    ``duration_ms`` controls simulation length:
+        - None: process entire dataset
+        - int: stop after this many milliseconds
     """
 
     name: str = "baseline"
     quote_interval_ms: int = 100
+    duration_ms: int | None = None
     markout_horizon_ms: int = 1_000
+    markout_horizons_ms: tuple[int, ...] = (100, 500, 1_000, 5_000, 10_000, 30_000)
     flatten_at_end: bool = True
     taker_fee_rate: float = 0.0005
     execution: ExecutionAssumptions = field(default_factory=ExecutionAssumptions)
@@ -43,8 +52,18 @@ class BacktestConfig:
     def __post_init__(self) -> None:
         if self.quote_interval_ms < 0 or self.markout_horizon_ms < 0:
             raise ValueError("intervals must be non-negative")
+        if self.duration_ms is not None and self.duration_ms <= 0:
+            raise ValueError("duration_ms must be positive")
         if self.taker_fee_rate < 0:
             raise ValueError("taker_fee_rate cannot be negative")
+        if any(horizon <= 0 for horizon in self.markout_horizons_ms):
+            raise ValueError("markout horizons must be positive")
+        if self.markout_horizon_ms not in self.markout_horizons_ms:
+            object.__setattr__(
+                self,
+                "markout_horizons_ms",
+                (*self.markout_horizons_ms, self.markout_horizon_ms),
+            )
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -61,6 +80,8 @@ class BacktestResult:
     depth_events: int
     trade_events: int
     fills: list[dict]
+    events: list[dict]
+    markouts: list[dict]
     equity_curve: list[dict]
     summary: dict
 
@@ -87,6 +108,8 @@ class BacktestResult:
             encoding="utf-8",
         )
         pd.DataFrame(self.fills).to_csv(path / f"{safe_stem}_fills.csv", index=False)
+        pd.DataFrame(self.events).to_csv(path / f"{safe_stem}_events.csv", index=False)
+        pd.DataFrame(self.markouts).to_csv(path / f"{safe_stem}_markouts.csv", index=False)
         pd.DataFrame(self.equity_curve).to_csv(path / f"{safe_stem}_equity.csv", index=False)
         return report_path
 
@@ -111,6 +134,53 @@ class HistoricalReplay:
         depth = pd.read_parquet(depth_path, columns=cls.DEPTH_COLUMNS)
         trades = pd.read_parquet(trades_path, columns=cls.TRADE_COLUMNS)
         return CapturedReplay(depth=depth, trades=trades, config=config)
+
+    @classmethod
+    def from_binance_parquet(
+        cls,
+        trades_parquet_path: str | Path,
+        config: BacktestConfig | None = None,
+        spread_ticks: float = 0.20,
+    ) -> "CapturedReplay":
+        """Load a Binance Vision aggTrades Parquet file and generate deterministic two-sided depth ticks."""
+        df_trades = pd.read_parquet(trades_parquet_path)
+        renames = {"transact_time": "event_time", "agg_trade_id": "trade_id"}
+        for k, v in renames.items():
+            if k in df_trades.columns:
+                df_trades.rename(columns={k: v}, inplace=True)
+        if "symbol" not in df_trades.columns:
+            df_trades["symbol"] = "BTCUSDT"
+
+        df_trades = df_trades.sort_values(["event_time", "trade_id"]).reset_index(drop=True)
+
+        depth_rows = []
+        t0 = int(df_trades.event_time.iloc[0])
+        p0 = float(df_trades.price.iloc[0])
+        half = spread_ticks / 2.0
+
+        for i in range(60):
+            depth_rows.append({"event_time": t0, "side": "bid", "price": round(p0 - half - i * 0.1, 2), "qty": 1.0})
+            depth_rows.append({"event_time": t0, "side": "ask", "price": round(p0 + half + i * 0.1, 2), "qty": 1.0})
+
+        last_p = p0
+        for row in df_trades.itertuples(index=False):
+            px = float(row.price)
+            if abs(px - last_p) >= 0.05:
+                t = int(row.event_time)
+                old_bid_px = round(last_p - half, 2)
+                old_ask_px = round(last_p + half, 2)
+                # Clear old top-of-book levels so LocalOrderBook doesn't cross
+                depth_rows.append({"event_time": t, "side": "bid", "price": old_bid_px, "qty": 0.0})
+                depth_rows.append({"event_time": t, "side": "ask", "price": old_ask_px, "qty": 0.0})
+
+                bid_px = round(px - half, 2)
+                ask_px = round(px + half, 2)
+                depth_rows.append({"event_time": t, "side": "bid", "price": bid_px, "qty": 2.0})
+                depth_rows.append({"event_time": t, "side": "ask", "price": ask_px, "qty": 2.0})
+                last_p = px
+
+        df_depth = pd.DataFrame(depth_rows).sort_values(["event_time", "side", "price"]).reset_index(drop=True)
+        return CapturedReplay(depth=df_depth, trades=df_trades, config=config)
 
     def run(
         self,
@@ -148,7 +218,7 @@ class HistoricalReplay:
         inventory_observations = 0
         equity_curve: list[dict] = []
         pending_markouts: list[dict] = []
-        markouts: list[float] = []
+        markout_records: list[dict] = []
         depth_event_count = 0
         trade_event_count = 0
         started_at = int(depth.event_time.iloc[0])
@@ -157,11 +227,25 @@ class HistoricalReplay:
         ended_at = int(depth.event_time.iloc[-1])
         if not trades.empty:
             ended_at = max(ended_at, int(trades.event_time.iloc[-1]))
+        
+        # Apply duration limit if configured
+        if self.config.duration_ms is not None:
+            ended_at = min(ended_at, started_at + self.config.duration_ms)
+
+        # Track most recent trade info to include in MarketState
+        last_trade_price: float | None = None
+        last_trade_qty: float | None = None
+        last_trade_side: str | None = None
+        last_trade_timestamp: int | None = None
 
         while current_depth is not None or current_trade is not None:
             depth_ts = int(current_depth[0]) if current_depth is not None else None
             trade_ts = int(current_trade[0]) if current_trade is not None else None
             timestamp = min(t for t in (depth_ts, trade_ts) if t is not None)
+            
+            # Check duration limit
+            if timestamp > ended_at:
+                break
 
             if depth_ts == timestamp:
                 group = current_depth[1]
@@ -175,27 +259,69 @@ class HistoricalReplay:
                 if bid is not None and ask is not None and bid[0] < ask[0]:
                     mid = (bid[0] + ask[0]) / 2.0
                     last_mid = mid
+                    broker.update_market_context(
+                        timestamp=timestamp,
+                        mid=mid,
+                        best_bid=bid[0],
+                        best_ask=ask[0],
+                    )
                     volatility = vol.update(mid)
                     equity = broker.net_pnl(mid)
                     risk.update_equity(equity)
                     for pending in pending_markouts[:]:
                         if timestamp >= pending["due_at"]:
-                            markouts.append(pending["signed_qty"] * (mid - pending["price"]))
+                            markout = pending["signed_qty"] * (mid - pending["price"])
+                            record = {
+                                "order_id": pending["order_id"],
+                                "fill_timestamp": pending["fill_timestamp"],
+                                "horizon_ms": pending["horizon_ms"],
+                                "due_at": pending["due_at"],
+                                "observed_at": timestamp,
+                                "future_mid": mid,
+                                "fill_price": pending["price"],
+                                "markout": markout,
+                                "available": True,
+                                "classification": classify_markout(markout),
+                            }
+                            markout_records.append(record)
+                            broker.emit_event({
+                                "event_type": "MARKOUT",
+                                "timestamp": timestamp,
+                                **record,
+                            })
                             pending_markouts.remove(pending)
 
                     if next_quote_at is None or timestamp >= next_quote_at:
-                        state = MarketState(
+                        state = MarketState.from_book(
                             timestamp=timestamp,
-                            mid_price=mid,
                             best_bid=bid[0],
                             best_bid_qty=bid[1],
                             best_ask=ask[0],
                             best_ask_qty=ask[1],
-                            spread=ask[0] - bid[0],
                             volatility=volatility,
                             inventory=broker.inventory.position,
+                            log_return=vol.last_log_return,
+                            trade_price=last_trade_price,
+                            trade_quantity=last_trade_qty,
+                            trade_side=last_trade_side,
                         )
-                        quotes = risk.apply_quotes(strategy.on_tick(state), broker.inventory.position)
+                        risk_events_before = len(risk.events)
+                        quotes = risk.apply_quotes(
+                            strategy.on_tick(state),
+                            broker.inventory.position,
+                            timestamp=timestamp,
+                            market_mid=mid,
+                            # update_quotes() replaces current orders atomically.
+                            open_orders=0,
+                        )
+                        for risk_event in risk.events[risk_events_before:]:
+                            broker.emit_event(risk_event)
+                        broker.record_quote_decision(
+                            strategy=strategy.name(),
+                            state=state,
+                            quotes=quotes,
+                            details=getattr(strategy, "last_quote_audit", {}),
+                        )
                         bid_ahead = book.bids.get(quotes.bid.price, 0.0) if quotes.bid else 0.0
                         ask_ahead = book.asks.get(quotes.ask.price, 0.0) if quotes.ask else 0.0
                         broker.update_quotes(quotes, timestamp, bid_ahead, ask_ahead)
@@ -212,6 +338,12 @@ class HistoricalReplay:
                 group = current_trade[1]
                 fills_before = len(broker.fills)
                 for row in group.itertuples(index=False):
+                    # Capture trade info for MarketState
+                    last_trade_timestamp = int(row.event_time)
+                    last_trade_price = float(row.price)
+                    last_trade_qty = float(row.qty)
+                    last_trade_side = "sell" if bool(row.is_buyer_maker) else "buy"
+                    
                     broker.on_trade(
                         TradeTick(
                             event_time=int(row.event_time),
@@ -223,13 +355,17 @@ class HistoricalReplay:
                         )
                     )
                 for fill in broker.fills[fills_before:]:
-                    pending_markouts.append(
-                        {
-                            "due_at": fill["timestamp"] + self.config.markout_horizon_ms,
+                    if fill["order_id"] == "forced_flatten":
+                        continue
+                    for horizon_ms in self.config.markout_horizons_ms:
+                        pending_markouts.append({
+                            "order_id": fill["order_id"],
+                            "fill_timestamp": fill["timestamp"],
+                            "due_at": fill["timestamp"] + horizon_ms,
+                            "horizon_ms": horizon_ms,
                             "price": fill["price"],
                             "signed_qty": fill["qty"] if fill["side"] == "buy" else -fill["qty"],
-                        }
-                    )
+                        })
                 trade_event_count += len(group)
                 current_trade = next(trade_iter, None)
                 max_abs_position = max(max_abs_position, abs(broker.inventory.position))
@@ -244,9 +380,25 @@ class HistoricalReplay:
             side = "sell" if broker.inventory.position > 0 else "buy"
             price = bid[0] if side == "sell" else ask[0]
             qty = abs(broker.inventory.position)
-            broker.inventory.on_fill(side, price, qty)
             flatten_fee = price * qty * self.config.taker_fee_rate
-            broker.fees_paid += flatten_fee
+            broker.portfolio.on_fill(side, price, qty, flatten_fee)
+            flatten_pnl = broker.portfolio.snapshot(price)
+            broker.emit_event(
+                {
+                    "event_type": "FORCED_FLATTEN",
+                    "timestamp": ended_at,
+                    "order_id": "forced_flatten",
+                    "side": side,
+                    "price": price,
+                    "qty": qty,
+                    "fee": flatten_fee,
+                    "gross_pnl": flatten_pnl["gross_pnl"],
+                    "net_pnl": flatten_pnl["net_pnl"],
+                    "inventory": broker.inventory.position,
+                    "realized_pnl": broker.inventory.realized_pnl,
+                    "reason": "flatten_at_end",
+                }
+            )
             broker.fills.append(
                 {
                     "order_id": "forced_flatten",
@@ -256,8 +408,35 @@ class HistoricalReplay:
                     "trade_id": None,
                     "timestamp": ended_at,
                     "fee": flatten_fee,
+                    "gross_pnl": flatten_pnl["gross_pnl"],
+                    "net_pnl": flatten_pnl["net_pnl"],
                 }
             )
+
+        for pending in pending_markouts:
+            record = {
+                "order_id": pending["order_id"],
+                "fill_timestamp": pending["fill_timestamp"],
+                "horizon_ms": pending["horizon_ms"],
+                "due_at": pending["due_at"],
+                "observed_at": None,
+                "future_mid": None,
+                "fill_price": pending["price"],
+                "markout": None,
+                "available": False,
+                "classification": "UNAVAILABLE",
+            }
+            markout_records.append(record)
+            broker.emit_event({
+                "event_type": "MARKOUT_UNAVAILABLE",
+                "timestamp": ended_at,
+                **record,
+                "reason": "no_future_book_observation",
+            })
+
+        available_markouts = [
+            record for record in markout_records if record["available"]
+        ]
 
         final_equity = broker.net_pnl(last_mid)
         equity_values = [point["equity"] for point in equity_curve] + [final_equity]
@@ -267,7 +446,7 @@ class HistoricalReplay:
         maker_fills = [fill for fill in broker.fills if fill["order_id"] != "forced_flatten"]
         summary = {
             "net_pnl": final_equity,
-            "gross_pnl": broker.inventory.total_pnl(last_mid),
+            "gross_pnl": broker.portfolio.gross_pnl(last_mid),
             "realized_pnl": broker.inventory.realized_pnl,
             "fees_paid": broker.fees_paid,
             "forced_flatten_fee": flatten_fee,
@@ -280,12 +459,36 @@ class HistoricalReplay:
             "final_position": broker.inventory.position,
             "max_abs_position": max_abs_position,
             "mean_abs_position": inventory_sum / inventory_observations if inventory_observations else 0.0,
+            "average_inventory": broker.inventory.average_inventory,
+            "inventory_variance": broker.inventory.inventory_variance,
+            "inventory_half_life_ms": broker.inventory.inventory_half_life_ms,
+            "time_spent_long_ms": broker.inventory.time_spent_long_ms,
+            "time_spent_short_ms": broker.inventory.time_spent_short_ms,
+            "inventory_distribution": broker.inventory.inventory_distribution,
             "max_drawdown": max_drawdown,
-            "mean_1s_markout": sum(markouts) / len(markouts) if markouts else None,
-            "markout_observations": len(markouts),
+            "mean_1s_markout": _mean_markout(markout_records, 1_000),
+            "markout_observations": len(available_markouts),
             "risk_halted": risk.halted,
             "risk_halt_reason": risk.halt_reason,
         }
+        summary.update(quote_quality(
+            broker.events,
+            broker.fills,
+            start=started_at,
+            end=ended_at,
+        ))
+        summary.update(summarise_adverse_selection(markout_records))
+        summary.update(summarize_pnl_waterfall(
+            broker.fills,
+            markout_records,
+            realized_pnl=broker.inventory.realized_pnl,
+            unrealized_pnl=broker.inventory.unrealized_pnl(last_mid),
+            fees=broker.fees_paid,
+        ))
+        summary.update({
+            f"mean_{horizon_ms}ms_markout": _mean_markout(markout_records, horizon_ms)
+            for horizon_ms in self.config.markout_horizons_ms
+        })
         return BacktestResult(
             strategy=strategy.name(),
             config=self.config.to_dict(),
@@ -294,6 +497,8 @@ class HistoricalReplay:
             depth_events=depth_event_count,
             trade_events=trade_event_count,
             fills=broker.fills,
+            events=broker.events,
+            markouts=markout_records,
             equity_curve=equity_curve,
             summary=summary,
         )
@@ -352,3 +557,14 @@ def _max_drawdown_absolute(equity: list[float]) -> float:
         peak = max(peak, value)
         max_drawdown = max(max_drawdown, peak - value)
     return max_drawdown
+
+
+def _mean_markout(records: list[dict], horizon_ms: int) -> float | None:
+    values = [
+        record["markout"]
+        for record in records
+        if record["horizon_ms"] == horizon_ms
+        and record["available"]
+        and record["markout"] is not None
+    ]
+    return sum(values) / len(values) if values else None

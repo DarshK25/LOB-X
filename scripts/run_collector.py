@@ -50,7 +50,7 @@ OTHER TERMINALS
     python scripts/read_data.py
 
   Verify C++ engine matches real book (after C++ build):
-    python scripts/verify_engine_mirror.py
+    (Use C++ test suite - verify_engine_mirror.py archived)
 """
 from __future__ import annotations
 

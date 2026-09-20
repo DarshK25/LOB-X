@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "backend/python")
 
@@ -66,7 +68,8 @@ async def main(args: argparse.Namespace) -> None:
     collector = Collector(
         symbol=args.symbol,
         enable_engine_mirror=not args.no_engine_mirror,
-        data_dir="data/raw_strategy",
+        data_dir=args.data_dir,
+        enable_storage=args.record_market_data,
     )
     strategy = build_strategy(args)
     runner = StrategyRunner(
@@ -77,6 +80,7 @@ async def main(args: argparse.Namespace) -> None:
             latency_ms=args.latency_ms,
             fill_ratio=args.fill_ratio,
             queue_model=args.queue_model,
+            max_quote_age_ms=args.max_quote_age_ms,
         ),
         risk_config=MarketMakingRiskConfig(
             max_position=args.max_position,
@@ -99,6 +103,15 @@ async def main(args: argparse.Namespace) -> None:
     finally:
         collector.close()
         s = runner.summary()
+        if args.events_output:
+            output = Path(args.events_output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps({
+                "summary": s,
+                "events": runner.shadow_engine.events,
+                "fills": runner.shadow_engine.fills,
+            }, indent=2), encoding="utf-8")
+            print(f"  Audit events   : {output}")
         print("\n" + "=" * 55)
         print("  SESSION SUMMARY")
         print("=" * 55)
@@ -112,6 +125,10 @@ async def main(args: argparse.Namespace) -> None:
         print(f"  Unrealized PnL: {s['unrealized_pnl']:.4f} USD")
         print(f"  Fees          : {s['fees_paid']:.4f} USD")
         print(f"  Total PnL     : {s['total_pnl']:.4f} USD")
+        print(f"  Max inventory : {s['max_inventory']:.6f} BTC")
+        print(f"  Avg inventory : {s['average_inventory']:.6f} BTC")
+        print(f"  Long time     : {s['time_spent_long_ms'] / 1000:.1f} s")
+        print(f"  Short time    : {s['time_spent_short_ms'] / 1000:.1f} s")
         print(f"  Risk halted   : {s['risk_halted']}" +
               (f" ({s['risk_halt_reason']})" if s['risk_halt_reason'] else ""))
         print("=" * 55)
@@ -143,6 +160,8 @@ def parse_args() -> argparse.Namespace:
                    help="Assumed maker fee rate (0.0002 = 2 bps)")
     p.add_argument("--latency-ms", type=int, default=100,
                    help="Quote activation latency used by the paper broker")
+    p.add_argument("--max-quote-age-ms", type=int, default=None,
+                   help="Cancel quotes before matching when older than this age")
     p.add_argument("--fill-ratio", type=float, default=1.0,
                    help="Maximum fraction of each eligible trade available to our quote")
     p.add_argument("--queue-model", choices=["shadow", "queue_ahead"], default="shadow",
@@ -153,6 +172,12 @@ def parse_args() -> argparse.Namespace:
                    help="Hard paper-session drawdown limit in USDT")
     p.add_argument("--no-engine-mirror", action="store_true",
                    help="Use Python reference book instead of C++ engine")
+    p.add_argument("--data-dir", default="data/raw_strategy",
+                   help="Market-data capture directory when recording is enabled")
+    p.add_argument("--record-market-data", action="store_true",
+                   help="Persist depth/trade Parquet files during this run")
+    p.add_argument("--events-output", default=None,
+                   help="Write strategy summary, fills, and events to this JSON file on exit")
     return p.parse_args()
 
 

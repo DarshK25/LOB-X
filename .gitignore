@@ -73,3 +73,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# ─── External References ──────────────────────────────────────────────────────
+# Third-party repositories cloned as implementation references (not dependencies)
+_reference/

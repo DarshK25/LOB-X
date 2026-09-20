@@ -94,7 +94,7 @@ Fix anything flagged before continuing.
 |----------|---------|---------|
 | 1 | `python scripts/run_collector.py` | Live collector (depth + trades → Parquet) |
 | 2 | `python scripts/watch_live.py` | Live bid/ask ticker |
-| 3 | `python scripts/verify_engine_mirror.py` | C++ vs Python book sync check |
+| 3 | (archived: verify_engine_mirror.py) | C++ vs Python book sync check |
 | 4 | `python scripts/run_live_strategy.py --strategy fixed` | Phase 2: baseline strategy |
 | 4 | `python scripts/run_live_strategy.py --strategy as` | Phase 2: AS strategy |
 | Any | `python scripts/read_data.py` | Inspect collected Parquet files |
@@ -150,7 +150,7 @@ LOB-X/
 | `cl.exe` not found | VS Build Tools missing C++ workload | Re-run VS installer, add "Desktop development with C++" |
 | `ImportError: DLL load failed` on `lobx_cpp` | Built for different Python version | Rebuild: `python scripts/setup_cpp_build.py` |
 | `UnicodeEncodeError` in console | Windows console not UTF-8 | Already handled — all scripts call `sys.stdout.reconfigure(encoding='utf-8')` |
-| `verify_engine_mirror.py` shows MISMATCH | Tick conversion or synthetic ID issue | Re-check `TICKS_PER_UNIT` in `engine_mirror.py` |
+| `verify_engine_mirror.py` shows MISMATCH | Tick conversion or synthetic ID issue | (Script archived - use C++ tests directly) |
 | `ModuleNotFoundError: lobx` | venv not activated or path wrong | Run from repo root; ensure `backend/python` is in `sys.path` |
 
 ---

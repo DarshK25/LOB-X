@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-ms", type=int, default=1000)
     parser.add_argument("--vol-window", type=int, default=60)
     parser.add_argument("--markout-ms", type=int, default=1000)
+    parser.add_argument("--trades", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -35,7 +36,8 @@ def main() -> None:
     config = RegimeConfig(args.sample_ms, args.vol_window, args.markout_ms)
     depth = pd.read_parquet(args.depth, columns=["event_time", "side", "price", "qty"])
     fills = pd.read_csv(args.fills)
-    states = sample_market_states(depth, config)
+    trades = pd.read_parquet(args.trades) if args.trades else None
+    states = sample_market_states(depth, config, trades)
     attributed = attribute_fills_to_regimes(fills, states, config)
     summary = summarise_regimes(attributed)
     args.output.mkdir(parents=True, exist_ok=True)

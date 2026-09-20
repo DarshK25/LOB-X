@@ -47,18 +47,11 @@ def calibrate_sigma(depth_df: pd.DataFrame, time_col: str = 'event_time', price_
 
 
 def calibrate_kappa(trades_df: pd.DataFrame, time_col: str = 'event_time') -> float:
-    """Calibrate fill probability decay (kappa) from trades DataFrame.
-    
-    In Avellaneda-Stoikov, lambda(delta) = A * exp(-kappa * delta).
-    This function estimates kappa by analyzing the empirical distribution 
-    of trade arrivals.
-    
-    A simplified estimation based on average trade frequency and spread.
-    """
     if len(trades_df) < 2:
-        return 1.5 # fallback default
+        return 1.5
         
-    times = trades_df[time_col].values
+    actual_col = time_col if time_col in trades_df.columns else ('transact_time' if 'transact_time' in trades_df.columns else trades_df.columns[0])
+    times = trades_df[actual_col].values
     total_time_sec = (times[-1] - times[0]) / 1000.0
     
     if total_time_sec <= 0:

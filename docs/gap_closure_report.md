@@ -9,7 +9,8 @@ This report follows the established **COMMAND RUN / ACTUAL OUTPUT / VERDICT / NO
 ### COMMAND RUN
 
 ```powershell
-$env:PYTHONPATH='backend/python'; python scripts/test_reconnect.py
+# Archived: test_reconnect.py moved to research/archive/legacy_scripts/
+# Use collector with --log-file for reconnect testing
 ```
 
 ### ACTUAL OUTPUT
