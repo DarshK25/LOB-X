@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rich.align import Align
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -53,12 +54,11 @@ class MarketView:
             show_value=False
         )
         
-        # Combine
-        content = Text()
-        content.append(stats)
-        content.append("\n")
-        content.append(chart_text)
-        
+        # Stack the stats grid (a Table renderable) above the chart Text.
+        # Group preserves each renderable's own formatting; Text.append cannot
+        # hold a Table. Text("") is a one-line spacer between them.
+        content = Group(stats, Text(""), chart_text)
+
         return Panel(content, title="Market", border_style="cyan")
 
 
@@ -224,11 +224,10 @@ class PnLView:
             show_value=False
         )
         
-        content = Text()
-        content.append(stats)
-        content.append("\n")
-        content.append(chart_text)
-        
+        # Stack the PnL stats grid (a Table renderable) above the chart Text via
+        # Group; Text.append cannot hold a Table. Text("") is a one-line spacer.
+        content = Group(stats, Text(""), chart_text)
+
         return Panel(content, title="PnL", border_style=pnl_color)
 
 

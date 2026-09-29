@@ -140,6 +140,64 @@ class TestTerminalViews:
         assert terminal.current_view == TerminalView.PNL
 
 
+class TestViewComposition:
+    """Views that stack a stats table above a chart must compose cleanly.
+
+    Regression: MarketView/PnLView built ``Text()`` and appended the stats
+    ``Table`` into it, which raises ``TypeError: Only str or Text can be
+    appended to Text``. They now use ``rich.console.Group``.
+    """
+
+    def _populated_collector(self) -> TelemetryCollector:
+        collector = TelemetryCollector()
+        # Two points so the chart renders a line rather than the empty state.
+        for i in range(2):
+            collector.update_market(MarketSnapshot(
+                timestamp=1000 + i,
+                mid=50000.0 + i,
+                best_bid=49999.0,
+                best_ask=50001.0,
+                spread=2.0,
+                microprice=50000.5,
+                volatility=0.0004,
+                imbalance=0.1,
+            ))
+            collector.update_portfolio(PortfolioSnapshot(
+                timestamp=1000 + i,
+                inventory=0.004,
+                cash=10.0,
+                realized_pnl=-1.0,
+                unrealized_pnl=-1.15,
+                fees=0.2,
+                gross_pnl=-1.95,
+                net_pnl=-2.15,
+                max_inventory=0.005,
+                avg_inventory=0.003,
+            ))
+        return collector
+
+    def _renders(self, panel) -> str:
+        from io import StringIO
+        from rich.console import Console
+        console = Console(file=StringIO(), width=80)
+        console.print(panel)  # raises if the renderable tree is malformed
+        return console.file.getvalue()
+
+    def test_market_view_renders_table_and_chart(self):
+        from lobx.terminal.views import MarketView
+
+        panel = MarketView(self._populated_collector()).render()
+        out = self._renders(panel)
+        assert "Mid" in out and "50,00" in out  # stats table survived
+
+    def test_pnl_view_renders_table_and_chart(self):
+        from lobx.terminal.views import PnLView
+
+        panel = PnLView(self._populated_collector()).render()
+        out = self._renders(panel)
+        assert "Net PnL" in out and "Fees" in out  # stats table survived
+
+
 class TestChartRendering:
     """Test chart rendering."""
     
