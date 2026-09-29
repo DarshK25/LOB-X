@@ -71,6 +71,7 @@ papers/*.pdf
 Thumbs.db
 .idea/
 .vscode/
+.kiro/
 *.swp
 *.swo
 
