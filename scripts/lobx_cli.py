@@ -34,6 +34,10 @@ from lobx.market_data.trade_stream import TradeTick
 from lobx.analytics.volatility import EWMAVolatilityEstimator
 from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
 from lobx.strategy.base import MarketState
+from lobx.execution.shadow_engine import ExecutionAssumptions
+from lobx.live.quote_loop import StrategyRunner
+from lobx.terminal.telemetry import TelemetryCollector
+from lobx.backtest.replay import BacktestConfig, HistoricalReplay
 
 # Suppress logging to make terminal UI clean
 logging.getLogger("lobx").setLevel(logging.ERROR)
@@ -550,6 +554,147 @@ class LiveDashboard:
             await self.collector.close_async()
 
 
+def _fmt_ms(ms: float | None) -> str:
+    if ms is None:
+        return "—"
+    if ms >= 1000:
+        return f"{ms / 1000.0:,.1f}s"
+    return f"{ms:,.0f}ms"
+
+
+def _render_backtest_report(result, symbol: str, source: str) -> None:
+    """Print the backtest summary as plain, unembellished tables.
+
+    Every number is read directly from ``result.summary`` (produced by
+    HistoricalReplay: PnL waterfall, markouts, adverse selection, quote
+    quality). No value is invented and no outcome is narrated.
+    """
+    s = result.summary
+    net = s.get("net_pnl", 0.0)
+    net_col = "bold green" if net >= 0 else "bold red"
+    window_s = (result.ended_at - result.started_at) / 1000.0
+
+    CONSOLE.print(f"\n[bold magenta]{'═' * 79}[/bold magenta]")
+    CONSOLE.print(f"[bold magenta]  BACKTEST REPORT — {result.strategy}  │  {symbol.upper()}[/bold magenta]")
+    CONSOLE.print(f"[bold magenta]{'═' * 79}[/bold magenta]")
+    CONSOLE.print(f"[dim]Source: {source}   Window: {window_s:,.0f}s   "
+                  f"Depth events: {result.depth_events:,}   Trades: {result.trade_events:,}[/dim]\n")
+
+    # 1. PnL attribution waterfall — where every dollar came from.
+    wf = Table(title="1. PnL Attribution (waterfall)", show_header=True, header_style="bold cyan")
+    wf.add_column("Component", style="bold white")
+    wf.add_column("USD", justify="right")
+    wf.add_column("Meaning", style="dim")
+    wf.add_row("Execution edge", f"{s.get('execution_edge', 0.0):+.4f}",
+               "Quote-vs-mid edge at fill time (not yet realized)")
+    wf.add_row("Realized inventory PnL", f"{s.get('realized_inventory_pnl', 0.0):+.4f}",
+               "Closed round-trips, average-cost basis")
+    wf.add_row("Unrealized inventory PnL", f"{s.get('unrealized_inventory_pnl', 0.0):+.4f}",
+               "Open position marked to final mid")
+    wf.add_row("Fees paid", f"{-s.get('fees', 0.0):+.4f}",
+               "Maker fees on fills + taker fee on forced flatten")
+    wf.add_row("Gross PnL", f"{s.get('gross_pnl', 0.0):+.4f}", "Realized + unrealized, before fees")
+    wf.add_row("[bold]Net PnL[/bold]", f"[{net_col}]{net:+.4f}[/{net_col}]", "After fees — the bottom line")
+    CONSOLE.print(wf)
+    CONSOLE.print("")
+
+    # 2. Fills, spread capture, and adverse selection.
+    adv = Table(title="2. Fills & Adverse Selection", show_header=True, header_style="bold cyan")
+    adv.add_column("Metric", style="bold white")
+    adv.add_column("Value", justify="right")
+    adv.add_column("Meaning", style="dim")
+    total_fills = s.get("fills", 0)
+    adv.add_row("Fills (maker / total)", f"{s.get('maker_fill_count', 0):,} / {total_fills:,}",
+                "Times a real trade crossed our resting quote")
+    adv.add_row("Filled qty (maker)", f"{s.get('maker_filled_qty', 0.0):.4f} BTC", "Volume we captured as a maker")
+    adv.add_row("Turnover", f"${s.get('turnover', 0.0):,.2f}", "Notional traded")
+    mm = s.get("mean_markout", 0.0)
+    mm_col = "green" if mm >= 0 else "red"
+    adv.add_row("Mean markout", f"[{mm_col}]{mm:+.5f}[/{mm_col}]",
+                "Avg mid move after a fill; negative = picked off")
+    adv.add_row("Adverse markout rate", f"{s.get('adverse_fill_rate', 0.0) * 100:.1f}%",
+                f"Of markout observations pooled across horizons: "
+                f"{s.get('adverse_fills', 0):,} adverse / {s.get('good_fills', 0):,} good / {s.get('neutral_fills', 0):,} neutral")
+    # Markout term structure across horizons.
+    horizons = [100, 500, 1000, 5000, 10000, 30000]
+    parts = []
+    for h in horizons:
+        v = s.get(f"mean_{h}ms_markout")
+        if v is not None:
+            parts.append(f"{_fmt_ms(h)}={v:+.4f}")
+    if parts:
+        adv.add_row("Markout term structure", "", "  ".join(parts))
+    CONSOLE.print(adv)
+    CONSOLE.print("")
+
+    # 3. Quote quality — how we sat in the book.
+    qq = Table(title="3. Quote Quality", show_header=True, header_style="bold cyan")
+    qq.add_column("Metric", style="bold white")
+    qq.add_column("Value", justify="right")
+    qq.add_column("Meaning", style="dim")
+    qq.add_row("Mean quoted spread", f"${s.get('spread', 0.0):.4f}", "Average ask−bid we posted")
+    qq.add_row("Mean distance from mid", f"${s.get('distance_from_mid_mean', 0.0):.4f}", "How far our bid sat from mid")
+    qq.add_row("Mean quote lifetime", _fmt_ms(s.get("quote_lifetime_ms_mean")), "How long a quote rested before fill/replace")
+    qq.add_row("Time quoted", f"{s.get('percentage_time_quoted', 0.0) * 100:.1f}%", "Share of session with a live two-sided quote")
+    qq.add_row("Fill rate", f"{s.get('fill_rate_per_quote_second', 0.0):.4f}/quote-sec", "Fills per second of quote exposure")
+    qq.add_row("Replacements", f"{s.get('replacements', 0):,}", "Cancel-replace count from repricing")
+    CONSOLE.print(qq)
+    CONSOLE.print("")
+
+    # 4. Inventory & risk.
+    rk = Table(title="4. Inventory & Risk", show_header=True, header_style="bold cyan")
+    rk.add_column("Metric", style="bold white")
+    rk.add_column("Value", justify="right")
+    rk.add_column("Meaning", style="dim")
+    rk.add_row("Final position", f"{s.get('final_position', 0.0):+.6f} BTC", "Flattened at end when configured")
+    rk.add_row("Max |position|", f"{s.get('max_abs_position', 0.0):.6f} BTC", "Largest inventory held")
+    rk.add_row("Mean |position|", f"{s.get('mean_abs_position', 0.0):.6f} BTC", "Average absolute inventory")
+    rk.add_row("Inventory half-life", _fmt_ms(s.get("inventory_half_life_ms")), "Time for inventory to mean-revert")
+    rk.add_row("Max drawdown", f"${s.get('max_drawdown', 0.0):.4f}", "Largest peak-to-trough equity drop")
+    halted = s.get("risk_halted", False)
+    rk.add_row("Risk halt", f"[red]{s.get('risk_halt_reason')}[/red]" if halted else "[green]none[/green]",
+               "Hard risk limit breach, if any")
+    CONSOLE.print(rk)
+    CONSOLE.print("")
+
+
+def _render_live_summary(runner, symbol: str, elapsed_s: int) -> None:
+    """Print an end-of-session summary read from the live engine state.
+
+    All figures come from runner.summary() (portfolio + risk). Reproducible
+    markout / adverse-selection term structure is produced by `backtest`,
+    since a live session cannot be replayed.
+    """
+    s = runner.summary()
+    net = s.get("net_pnl", s.get("total_pnl", 0.0))
+    net_col = "bold green" if net >= 0 else "bold red"
+
+    CONSOLE.print("\n[bold magenta]═══════════════════════════════════════════════════════════════════════════════[/bold magenta]")
+    CONSOLE.print(f"[bold magenta]  LIVE SESSION SUMMARY — {s.get('strategy', 'strategy')}  │  {symbol.upper()}[/bold magenta]")
+    CONSOLE.print("[bold magenta]═══════════════════════════════════════════════════════════════════════════════[/bold magenta]")
+    CONSOLE.print(f"[dim]Window: {elapsed_s}s   Ticks: {s.get('ticks', 0):,}   "
+                  f"Fills: {s.get('fills', 0):,}[/dim]\n")
+
+    t = Table(show_header=True, header_style="bold cyan")
+    t.add_column("Metric", style="bold white")
+    t.add_column("Value", justify="right")
+    t.add_column("Meaning", style="dim")
+    t.add_row("Execution edge", f"{s.get('execution_edge', 0.0):+.4f}", "Quote-vs-mid edge at fill time")
+    t.add_row("Realized PnL", f"{s.get('realized_pnl', 0.0):+.4f}", "Closed round-trips, average-cost basis")
+    t.add_row("Unrealized PnL", f"{s.get('unrealized_pnl', 0.0):+.4f}", "Open position marked to last mid")
+    t.add_row("Fees paid", f"-{s.get('fees_paid', s.get('fees', 0.0)):.4f}", "Maker fees on fills")
+    t.add_row("[bold]Net PnL[/bold]", f"[{net_col}]{net:+.4f}[/{net_col}]", "After fees — the bottom line")
+    t.add_row("Final position", f"{s.get('position', 0.0):+.6f} BTC", "Net BTC held at session end")
+    t.add_row("Max |inventory|", f"{s.get('max_inventory', 0.0):.6f} BTC", "Largest position during the run")
+    t.add_row("Inventory half-life", _fmt_ms(s.get("inventory_half_life_ms")), "Time for inventory to mean-revert")
+    halted = s.get("risk_halted", False)
+    t.add_row("Risk halt", f"[red]{s.get('risk_halt_reason')}[/red]" if halted else "[green]none[/green]",
+              "Hard risk limit breach, if any")
+    CONSOLE.print(t)
+    CONSOLE.print("[dim]For reproducible markout / adverse-selection analysis over a fixed "
+                  "dataset, run `backtest`.[/dim]\n")
+
+
 # ── Interactive Command Loop ──────────────────────────────────────────────────
 class LobxCLI:
     def __init__(self) -> None:
@@ -599,12 +744,25 @@ class LobxCLI:
             inv = float(args[1]) if len(args) > 1 else 0.0
             self.cmd_as(symbol, inv)
 
-        elif cmd in ("sim", "backtest"):
-            self.cmd_sim()
+        elif cmd in ("sim", "dashboard", "engine", "run"):
+            symbol = "BTCUSDT"
+            duration_s = 60
+            for a in args:
+                if a.isdigit():
+                    duration_s = int(a)
+                else:
+                    symbol = a.upper()
+            self.cmd_sim(symbol, duration_s)
 
-        elif cmd in ("hft", "engine", "dashboard"):
-            symbol = args[0] if args else "BTCUSDT"
-            self.cmd_hft(symbol)
+        elif cmd in ("backtest", "replay", "bt"):
+            date = None
+            minutes = None
+            for a in args:
+                if a.count("-") == 2:
+                    date = a
+                elif a.replace(".", "", 1).isdigit():
+                    minutes = float(a)
+            self.cmd_backtest(date=date, minutes=minutes)
 
         elif cmd == "status":
             self.cmd_status()
@@ -620,7 +778,8 @@ class LobxCLI:
         table.add_row("live [sym] [tf] [mode]", "Open real-time terminal with live L2 book & chart (e.g. 'live BTCUSDT 1s line' or 'live 5s candle').")
         table.add_row("book [symbol]", "Fetch and display an instant snapshot table of top bid/ask levels.")
         table.add_row("as [symbol] [q]", "Calculate Avellaneda-Stoikov reservation price & optimal spread for inventory q.")
-        table.add_row("sim", "Run live Avellaneda-Stoikov market-making simulation on real Binance WebSocket feeds.")
+        table.add_row("sim [sym] [secs]", "Run the Avellaneda-Stoikov strategy live on Binance data through the execution core, with a live telemetry view.")
+        table.add_row("backtest [date] [min]", "Replay a captured session (data/raw) through the strategy + engine and print the PnL / markout / adverse-selection report.")
         table.add_row("status", "Display system environment, matching engine bridge, and network status.")
         table.add_row("help / ?", "Show this command listing.")
         table.add_row("exit / quit / q", "Exit the CLI session.")
@@ -739,6 +898,73 @@ class LobxCLI:
         except Exception as exc:
             CONSOLE.print(f"[bold red]Failed to compute AS model:[/bold red] {exc}\n")
 
+    def cmd_backtest(self, date: str | None = None, minutes: float | None = None,
+                     gamma: float = 0.1, kappa: float = 1.5) -> None:
+        """Replay a captured session through the canonical AS strategy + engine.
+
+        Uses HistoricalReplay over real captured depth+trade Parquet in data/raw.
+        Prints the PnL waterfall, markouts, adverse selection, and quote quality.
+        """
+        data_dir = Path(__file__).resolve().parents[1] / "data" / "raw"
+        if not data_dir.is_dir():
+            CONSOLE.print(f"[bold red]No capture directory:[/bold red] {data_dir}\n")
+            return
+
+        # Pick the capture: an explicit date, else the largest depth file that
+        # has a matching non-trivial trades file.
+        def _pair(depth_path: Path) -> tuple[Path, Path] | None:
+            trades_path = depth_path.with_name(depth_path.name.replace("depth_", "trades_", 1))
+            if trades_path.exists() and trades_path.stat().st_size > 1024:
+                return depth_path, trades_path
+            return None
+
+        pair: tuple[Path, Path] | None = None
+        if date:
+            candidate = data_dir / f"depth_{date}.parquet"
+            pair = _pair(candidate) if candidate.exists() else None
+            if pair is None:
+                CONSOLE.print(f"[bold red]No usable capture for date {date} in {data_dir}[/bold red]\n")
+                return
+        else:
+            candidates = sorted(data_dir.glob("depth_*.parquet"), key=lambda p: p.stat().st_size, reverse=True)
+            for cand in candidates:
+                pair = _pair(cand)
+                if pair is not None:
+                    break
+            if pair is None:
+                CONSOLE.print(f"[bold red]No usable depth+trades capture found in {data_dir}[/bold red]\n")
+                return
+
+        depth_path, trades_path = pair
+        duration_ms = int(minutes * 60_000) if minutes else None
+        horizon = (duration_ms / 1000.0) if duration_ms else 3600.0
+
+        CONSOLE.print(f"\n[bold magenta]▶  Backtest on {depth_path.name}[/bold magenta]")
+        CONSOLE.print(f"[dim]γ={gamma}  κ={kappa}  "
+                      f"window={'full capture' if duration_ms is None else f'{minutes:g} min'}  "
+                      f"maker_fee=2bps  queue_model=queue_ahead[/dim]")
+        CONSOLE.print("[dim]Loading Parquet and replaying… (large captures take a moment)[/dim]")
+
+        cfg = BacktestConfig(
+            name="as_cli",
+            quote_interval_ms=100,
+            duration_ms=duration_ms,
+            execution=ExecutionAssumptions(maker_fee_rate=0.0002, queue_model="queue_ahead"),
+        )
+
+        def _make_strategy():
+            return AvellanedaStoikovStrategy(gamma=gamma, kappa=kappa,
+                                             horizon_seconds=horizon, qty=0.001)
+
+        try:
+            replay = HistoricalReplay.from_parquet(depth_path, trades_path, cfg)
+            result = replay.run(_make_strategy)
+        except Exception as exc:
+            CONSOLE.print(f"[bold red]Backtest failed:[/bold red] {type(exc).__name__}: {exc}\n")
+            return
+
+        _render_backtest_report(result, "BTCUSDT", source=depth_path.name)
+
     def cmd_sim(self, symbol: str = "BTCUSDT", duration_s: int = 60) -> None:
         """
         Live Avellaneda-Stoikov market-making simulation on REAL Binance data
@@ -757,81 +983,24 @@ class LobxCLI:
                 heartbeat_s=60,
             )
 
-            # ── Simulation state ──────────────────────────────────────────────
-            gamma   = 0.1     # risk aversion
-            kappa   = 1.5     # order arrival intensity
-            canonical_strategy = AvellanedaStoikovStrategy(
+            # ── Canonical execution core ──────────────────────────────────────
+            gamma = 0.1
+            kappa = 1.5
+            strategy = AvellanedaStoikovStrategy(
                 gamma=gamma, kappa=kappa, horizon_seconds=max(duration_s, 1), qty=0.001
             )
-            volatility_estimator = EWMAVolatilityEstimator(decay=0.98)
-            inventory = 0.0   # BTC held (can go negative for short)
-            cash      = 0.0   # realised cash from fills
-            fills: list[str] = []
-            n_buys = n_sells = 0
-            sigma_window: list[float] = []   # rolling mid prices for vol
+            runner = StrategyRunner(
+                collector,
+                strategy,
+                execution_assumptions=ExecutionAssumptions(
+                    maker_fee_rate=0.0002, queue_model="queue_ahead"
+                ),
+            )
+            engine = runner.shadow_engine
             price_history: list[float] = []  # last N mid prices for chart
-            pnl_history: list[float] = []    # last N pnl values for chart
+            pnl_history: list[float] = []    # last N net-pnl values for chart
             start = time.time()
 
-            def _as_quotes(mid: float, t_rem: float) -> tuple[float, float, float, float, float]:
-                """Return canonical AS (reservation, spread, bid, ask, sigma)."""
-                book = collector.depth_mgr.book
-                bid = book.best_bid()
-                ask = book.best_ask()
-                if bid is None or ask is None:
-                    return mid, 0.0, mid, mid, 0.0
-                sigma = volatility_estimator.current()
-                state = MarketState.from_book(
-                    timestamp=int(time.time() * 1000),
-                    best_bid=bid[0], best_bid_qty=bid[1],
-                    best_ask=ask[0], best_ask_qty=ask[1],
-                    volatility=sigma, inventory=inventory,
-                )
-                quotes = canonical_strategy.on_tick(state)
-                audit = canonical_strategy.last_quote_audit
-                return (
-                    audit["reservation_price"],
-                    audit["model_full_spread"],
-                    quotes.bid.price if quotes.bid else mid,
-                    quotes.ask.price if quotes.ask else mid,
-                    sigma,
-                )
-
-            def _on_trade(tick: "TradeTick") -> None:
-                nonlocal inventory, cash, n_buys, n_sells
-                sigma_window.append(tick.price)
-                if len(sigma_window) > 30:
-                    sigma_window.pop(0)
-
-                book = collector.depth_mgr.book
-                bb   = book.best_bid()
-                ba   = book.best_ask()
-                if bb is None or ba is None or not collector.depth_mgr.is_synced:
-                    return
-                mid   = (bb[0] + ba[0]) / 2.0
-                volatility_estimator.update(mid)
-                t_rem = 1.0 - min(1.0, (time.time() - start) / (duration_s * 60))
-                _, _, our_bid, our_ask, _ = _as_quotes(mid, t_rem)
-
-                # Taker SELL hits our BID quote → we buy
-                if tick.is_buyer_maker and tick.price <= our_bid:
-                    qty = min(tick.qty, 0.01)   # cap fill at 0.01 BTC
-                    inventory += qty
-                    cash      -= qty * tick.price
-                    n_buys    += 1
-                    fills.append(f"BUY  {qty:.4f} @ {tick.price:,.2f}")
-                    if len(fills) > 6: fills.pop(0)
-
-                # Taker BUY lifts our ASK quote → we sell
-                elif not tick.is_buyer_maker and tick.price >= our_ask:
-                    qty = min(tick.qty, 0.01)
-                    inventory -= qty
-                    cash      += qty * tick.price
-                    n_sells   += 1
-                    fills.append(f"SELL {qty:.4f} @ {tick.price:,.2f}")
-                    if len(fills) > 6: fills.pop(0)
-
-            collector.on_trade(_on_trade)
             ws_task = asyncio.create_task(collector.run())
             await asyncio.sleep(0)
 
@@ -909,76 +1078,86 @@ class LobxCLI:
                 elapsed = time.time() - start
                 t_rem   = max(0.0, 1.0 - elapsed / duration_s)
 
-                book = collector.depth_mgr.book
-                bb   = book.best_bid()
-                ba   = book.best_ask()
+                book   = collector.depth_mgr.book
+                bb     = book.best_bid()
+                ba     = book.best_ask()
                 synced = collector.depth_mgr.is_synced
+                mid    = runner._last_mid
+                audit  = getattr(strategy, "last_quote_audit", {}) or {}
 
-                # ── 1. Model panel ───────────────────────────────────────────
+                # ── 1. Engine telemetry (read from the canonical core) ───────
                 model_table = Table(show_header=False, expand=True, box=None, padding=(0, 1))
                 model_table.add_column("Metric", style="dim")
                 model_table.add_column("Value",  justify="right")
-
-                if bb and ba and synced:
-                    mid = (bb[0] + ba[0]) / 2.0
-                    res, δ, our_bid, our_ask, sigma = _as_quotes(mid, t_rem)
-                    unrealized = inventory * mid
-                    total_pnl = cash + unrealized
-
+                if mid and synced:
+                    res        = audit.get("reservation_price", mid)
+                    spread     = audit.get("model_full_spread", 0.0)
+                    rb         = engine.resting_bid
+                    ra         = engine.resting_ask
+                    position   = engine.inventory.position
+                    realized   = engine.inventory.realized_pnl
+                    unrealized = engine.inventory.unrealized_pnl(mid)
+                    fees       = engine.fees_paid
+                    net        = engine.net_pnl(mid)
                     price_history.append(mid)
-                    pnl_history.append(total_pnl)
+                    pnl_history.append(net)
                     if len(price_history) > 120: price_history.pop(0)
                     if len(pnl_history) > 120: pnl_history.pop(0)
-
-                    model_table.add_row("Status",        "[bold green]● LIVE STREAMING[/bold green]")
+                    inv_col = "green" if position >= 0 else "red"
+                    net_col = "bold green" if net >= 0 else "bold red"
+                    model_table.add_row("Status", "[bold green]● LIVE — canonical core[/bold green]")
                     model_table.add_row("Market Mid (s)", f"[bold white]${mid:,.2f}[/bold white]")
                     model_table.add_row("Reservation (r)", f"[bold cyan]${res:,.2f}[/bold cyan]")
-                    model_table.add_row("AS Spread (δ)", f"[yellow]${δ:.4f}[/yellow]")
-                    model_table.add_row("Our BID Quote", f"[bold green]${our_bid:,.2f}[/bold green]")
-                    model_table.add_row("Our ASK Quote", f"[bold red]${our_ask:,.2f}[/bold red]")
-                    model_table.add_row("Inventory (q)", f"[{'green' if inventory >= 0 else 'red'}]{inventory:+.6f} BTC[/{'green' if inventory >= 0 else 'red'}]")
-                    model_table.add_row("Realized Cash", f"${cash:+.2f}")
-                    model_table.add_row("Unrealized Value", f"${unrealized:+.2f}")
-                    model_table.add_row("Total Mkt-to-Mkt P&L", f"[{'bold green' if total_pnl >= 0 else 'bold red'}]${total_pnl:+.4f}[/{'bold green' if total_pnl >= 0 else 'bold red'}]")
+                    model_table.add_row("Model Spread (δ)", f"[yellow]${spread:.4f}[/yellow]")
+                    model_table.add_row("Our BID", "[bold green]—[/bold green]" if rb is None else f"[bold green]${rb.price:,.2f}[/bold green]")
+                    model_table.add_row("Our ASK", "[bold red]—[/bold red]" if ra is None else f"[bold red]${ra.price:,.2f}[/bold red]")
+                    model_table.add_row("Inventory (q)", f"[{inv_col}]{position:+.6f} BTC[/{inv_col}]")
+                    model_table.add_row("Fills", f"{engine.fill_count:,}")
+                    model_table.add_row("Realized PnL", f"${realized:+.4f}")
+                    model_table.add_row("Unrealized PnL", f"${unrealized:+.4f}")
+                    model_table.add_row("Fees Paid", f"[red]-${fees:.4f}[/red]")
+                    model_table.add_row("Net PnL (mark)", f"[{net_col}]${net:+.4f}[/{net_col}]")
                 else:
                     model_table.add_row("Status", f"[yellow]◑ {collector.ws_status}[/yellow]")
-
                 layout["model"].update(Panel(model_table, border_style="magenta", title="Live AS Engine Telemetry"))
 
-                # ── 2. Math Formula & Risk Gauge Panel (Image 4 Replica) ─────
+                # ── 2. Formula & inventory-skew transparency ─────────────────
                 math_txt = Text()
-                if bb and ba and synced:
-                    mid = (bb[0] + ba[0]) / 2.0
-                    res, δ, our_bid, our_ask, sigma = _as_quotes(mid, t_rem)
-                    skew = inventory * gamma * (sigma**2) * max(t_rem, 0.01)
+                if mid and synced:
+                    rb       = engine.resting_bid
+                    ra       = engine.resting_ask
+                    position = engine.inventory.position
+                    sigma    = audit.get("sigma")
+                    skew     = audit.get("inventory_skew")
 
-                    # Active Quotes vs Best Bid/Ask Slider
-                    math_txt.append("Active Quotes vs Best Bid/Ask:\n", style="bold white")
-                    math_txt.append(f"  [bb ${bb[0]:,.2f} ─ ", style="dim green")
-                    math_txt.append(f"bid ${our_bid:,.2f}", style="bold green")
-                    math_txt.append(" ─ mid ─ ", style="dim white")
-                    math_txt.append(f"ask ${our_ask:,.2f}", style="bold red")
-                    math_txt.append(f" ─ ba ${ba[0]:,.2f}]\n\n", style="dim red")
+                    math_txt.append("Quotes vs best bid/ask:\n", style="bold white")
+                    if bb and ba:
+                        math_txt.append(f"  bb ${bb[0]:,.2f}", style="dim green")
+                        math_txt.append("   bid " + ("—" if rb is None else f"${rb.price:,.2f}"), style="bold green")
+                        math_txt.append("  |  ", style="dim white")
+                        math_txt.append("ask " + ("—" if ra is None else f"${ra.price:,.2f}"), style="bold red")
+                        math_txt.append(f"   ba ${ba[0]:,.2f}\n\n", style="dim red")
 
-                    # Visual Inventory Risk Gauge
-                    math_txt.append("Inventory Risk Gauge:\n", style="bold white")
+                    math_txt.append("Inventory gauge:\n", style="bold white")
                     bar_w = 20
-                    inv_norm = max(-1.0, min(1.0, inventory / 0.1))  # scale ±0.1 BTC
-                    pos = int((inv_norm + 1.0) / 2.0 * (bar_w - 1))
+                    inv_norm = max(-1.0, min(1.0, position / 0.005))
+                    pos = max(0, min(bar_w - 1, int((inv_norm + 1.0) / 2.0 * (bar_w - 1))))
                     gauge = ["░"] * bar_w
                     gauge[pos] = "▓"
-                    gauge_str = "".join(gauge)
-                    gauge_col = "green" if inventory >= 0 else "red"
-                    math_txt.append(f"  SHORT [{gauge_str}] LONG  ({inventory:+.4f} BTC)\n\n", style=f"bold {gauge_col}")
+                    gcol = "green" if position >= 0 else "red"
+                    math_txt.append(f"  SHORT [{''.join(gauge)}] LONG  ({position:+.6f} BTC)\n\n", style=f"bold {gcol}")
 
-                    # Math formula substitution
-                    math_txt.append("Formula Substitution:\n", style="bold white")
-                    math_txt.append(f"  r = s - q·γ·σ²(T-t) = ${res:,.2f} (Skew: ${skew:+.4f})\n", style="cyan")
-                    math_txt.append(f"  δ = γσ²(T-t) + (2/γ)ln(1+γ/κ) = ${δ:.4f}\n", style="yellow")
+                    math_txt.append("AS model:\n", style="bold white")
+                    math_txt.append("  r = s − q·γ·σ²(T−t)\n", style="cyan")
+                    math_txt.append("  δ = γσ²(T−t) + (2/γ)ln(1+γ/κ)\n", style="yellow")
+                    if sigma is not None:
+                        math_txt.append(f"  σ = {sigma:.3e}   ", style="dim")
+                    if skew is not None:
+                        math_txt.append(f"inventory skew (r−s) = {skew:+.3e} USD\n", style="dim")
                 else:
                     math_txt.append("\n  Waiting for book sync…", style="dim")
 
-                layout["math"].update(Panel(math_txt, border_style="cyan", title="AS Model Risk Gauge & Formula Breakdown"))
+                layout["math"].update(Panel(math_txt, border_style="cyan", title="AS Model — formula & inventory skew"))
 
                 # ── 3. Charts Panels (Mid Price & PnL Curves) ───────────────
                 term_w = CONSOLE.width or 80
@@ -998,25 +1177,30 @@ class LobxCLI:
                 pnl_title.append(")")
                 layout["pnl_chart"].update(Panel(pnl_chart, border_style="green" if pnl_val >= 0 else "red", title=pnl_title))
 
-                # ── 4. Fills Panel ────────────────────────────────────────────
+                # ── 4. Recent fills (from the engine ledger) ─────────────────
                 fill_txt = Text()
-                if fills:
-                    for f in reversed(fills):
-                        side_color = "bold green" if f.startswith("BUY") else "bold red"
-                        fill_txt.append(f"  {f}\n", style=side_color)
+                recent = engine.fills[-6:]
+                if recent:
+                    for f in reversed(recent):
+                        side = f.get("side", "")
+                        scol = "bold green" if side == "buy" else "bold red"
+                        fill_txt.append(f"  {side.upper():4s} {f.get('qty', 0.0):.6f} @ ${f.get('price', 0.0):,.2f}\n", style=scol)
                 else:
-                    fill_txt.append("\n  Waiting for fills…\n", style="dim")
+                    fill_txt.append("\n  No fills yet…\n", style="dim")
+                n_buy  = sum(1 for f in engine.fills if f.get("side") == "buy")
+                n_sell = engine.fill_count - n_buy
+                layout["fills"].update(Panel(fill_txt, border_style="yellow", title=f"Fills ({n_buy} buy / {n_sell} sell)"))
 
-                layout["fills"].update(Panel(fill_txt, border_style="yellow", title=f"Fills ({n_buys} Buys / {n_sells} Sells)"))
-
-                # ── 5. Bottom Description Panel ──────────────────────────────
-                desc = Text()
-                desc.append("Avellaneda-Stoikov (2008) Market Maker. ", style="bold white")
-                desc.append("Listens to real Binance order book & trade ticks. ", style="dim")
-                desc.append("Virtual quotes automatically skew to manage inventory risk. ", style="dim yellow")
-                desc.append(f"Progress: {int(elapsed)}s / {duration_s}s ({int((1-t_rem)*100)}%). ", style="dim cyan")
-                desc.append("Ctrl+C to stop early.", style="dim")
-                layout["footer"].update(Panel(desc, border_style="blue", title=f"LOB-X AS Engine  │  Symbol: {symbol.upper()}  │  γ={gamma}  κ={kappa}"))
+                # ── 5. Footer ────────────────────────────────────────────────
+                halt = f"  [bold red]RISK HALT: {runner.risk_manager.halt_reason}[/bold red]" if runner.risk_manager.halted else ""
+                desc = Text.from_markup(
+                    "[bold white]Avellaneda-Stoikov[/bold white] via the canonical core "
+                    "(strategy → risk → shadow fill engine → portfolio).  "
+                    f"[dim cyan]Progress: {int(elapsed)}s / {duration_s}s.[/dim cyan]  "
+                    f"[dim]Ctrl+C to stop.[/dim]{halt}"
+                )
+                layout["footer"].update(Panel(desc, border_style="blue",
+                    title=f"LOB-X  │  {symbol.upper()}  │  γ={gamma}  κ={kappa}  maker_fee=2bps"))
 
                 return layout
 
@@ -1038,57 +1222,7 @@ class LobxCLI:
                 except: pass
                 await collector.close_async()
 
-            # ── Comprehensive Quantitative Performance Analysis ────────────────
-            book = collector.depth_mgr.book
-            bb, ba = book.best_bid(), book.best_ask()
-            final_mid = (bb[0] + ba[0]) / 2.0 if bb and ba else 0.0
-            unrealized_pnl = inventory * final_mid
-            total_pnl = cash + unrealized_pnl
-            tot_fills = n_buys + n_sells
-
-            CONSOLE.print(f"\n[bold magenta]═══════════════════════════════════════════════════════════════════════════════[/bold magenta]")
-            CONSOLE.print(f"[bold magenta]           AVELANEDA-STOIKOV SIMULATION PERFORMANCE ANALYSIS           [/bold magenta]")
-            CONSOLE.print(f"[bold magenta]═══════════════════════════════════════════════════════════════════════════════[/bold magenta]\n")
-
-            summary = Table(title=f"1. Core Execution Summary ({symbol.upper()})", show_header=True, header_style="bold cyan")
-            summary.add_column("Metric",              style="bold white")
-            summary.add_column("Value",               justify="right")
-            summary.add_column("Financial Explanation", style="dim")
-
-            summary.add_row("Simulation Runtime",    f"{int(time.time() - start)}s", "Total live execution window")
-            summary.add_row("Total Virtual Fills",    f"{tot_fills:,}", "Executed when real trades crossed our quotes")
-            summary.add_row("Buy Fills / Sell Fills",  f"[green]{n_buys}[/green] / [red]{n_sells}[/red]", f"Buy ratio: {(n_buys/tot_fills*100 if tot_fills else 0):.1f}%")
-            summary.add_row("Final Inventory (q)",    f"[{'green' if inventory>=0 else 'red'}]{inventory:+.6f} BTC[/{'green' if inventory>=0 else 'red'}]", "Net BTC position held at session end")
-            summary.add_row("Realized Cash Balance",  f"${cash:+.2f}", "Net cash accumulated from completed trades")
-            summary.add_row("Unrealized Inventory PnL", f"${unrealized_pnl:+.2f}", f"Mark-to-market value of {inventory:+.4f} BTC")
-            summary.add_row("Net Mark-to-Market PnL", f"[{'bold green' if total_pnl >= 0 else 'bold red'}]${total_pnl:+.4f}[/{'bold green' if total_pnl >= 0 else 'bold red'}]", "Total PnL = Realized Cash + Unrealized Inventory")
-
-            CONSOLE.print(summary)
-            CONSOLE.print("")
-
-            # ── 2. Educational Breakdown Panel ──────────────────────────────
-            edu_table = Table(title="2. Deconstructing The PnL & Model Behavior", show_header=True, header_style="bold yellow")
-            edu_table.add_column("Behavior / Phenomenon", style="bold yellow")
-            edu_table.add_column("What Happened & Why", style="white")
-
-            skew_dir = "Downward (lowered quotes to sell)" if inventory > 0 else "Upward (raised quotes to buy)"
-            pnl_nature = "Positive market drift on long inventory" if unrealized_pnl > 0 else "Negative inventory draw-down"
-
-            edu_table.add_row(
-                "Why PnL was +" + f"${total_pnl:.2f}",
-                f"Your PnL has TWO components: (1) Spread capture on {tot_fills} micro-trades, and (2) {pnl_nature}. In HFT, market-makers earn tiny spreads, but taking inventory exposes them to price drift."
-            )
-            edu_table.add_row(
-                "Inventory Skewing",
-                f"Your final inventory was {inventory:+.4f} BTC. As $q$ shifted away from zero, AS automatically applied {skew_dir} skew to force inventory back toward 0."
-            )
-            edu_table.add_row(
-                "Sophistication vs Real Hedge Funds",
-                "LOB-X implements pure Avellaneda-Stoikov (2008). Institutional HFTs (Jump, Citadel, Tower) build on top of this by adding: (1) Microstructure signals (order flow toxicity), (2) Queue priority estimation, (3) Adverse selection filters, and (4) FPGA/Sub-microsecond execution."
-            )
-
-            CONSOLE.print(edu_table)
-            CONSOLE.print("")
+            _render_live_summary(runner, symbol, int(time.time() - start))
 
         try:
             asyncio.run(_run_sim())
