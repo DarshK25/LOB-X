@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import os
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +53,62 @@ except ImportError:
 
 CONSOLE = Console()
 
+# ── Microstructure & Mathematical Model Helpers ──────────────────────────────
+def order_flow_imbalance(bid_vol: float, ask_vol: float) -> float:
+    """[-1.0, +1.0]; +1 = pure buy pressure, -1 = pure sell pressure."""
+    total = bid_vol + ask_vol
+    return (bid_vol - ask_vol) / total if total > 0 else 0.0
+
+def microprice(best_bid: float, best_ask: float, bid_vol: float, ask_vol: float) -> float:
+    """Stoikov (2018) volume-weighted micro-price estimator."""
+    total = bid_vol + ask_vol
+    if total == 0:
+        return (best_bid + best_ask) / 2.0
+    return best_bid * (ask_vol / total) + best_ask * (bid_vol / total)
+
+def reservation_price(mid: float, inventory: float, gamma: float, sigma: float, time_remaining: float) -> float:
+    """Avellaneda-Stoikov (2008) reservation price."""
+    return mid - inventory * gamma * (sigma ** 2) * time_remaining
+
+def optimal_spread(gamma: float, sigma: float, time_remaining: float, kappa: float) -> float:
+    """Avellaneda-Stoikov optimal half-spread calculation."""
+    return gamma * (sigma ** 2) * time_remaining + (2.0 / gamma) * math.log(1.0 + gamma / kappa)
+
+def as_quotes(mid: float, inventory: float, gamma: float, sigma: float, time_remaining: float, kappa: float) -> tuple[float, float]:
+    """Compute optimal Avellaneda-Stoikov Bid/Ask quotes."""
+    r = reservation_price(mid, inventory, gamma, sigma, time_remaining)
+    spread = optimal_spread(gamma, sigma, time_remaining, kappa)
+    return r - spread / 2.0, r + spread / 2.0
+
+class HawkesIntensityGauge:
+    """
+    Real-time Hawkes process intensity gauge for order flow arrival.
+    λ(t) = μ + Σ α * exp(-β * (t - t_i))
+    """
+    def __init__(self, mu: float = 0.5, alpha: float = 0.8, beta: float = 2.0, window_s: float = 30.0) -> None:
+        self.mu = mu
+        self.alpha = alpha
+        self.beta = beta
+        self.window_s = window_s
+        self.events: deque[float] = deque()
+
+    def on_trade(self) -> None:
+        self.events.append(time.time())
+
+    def intensity(self) -> float:
+        now = time.time()
+        while self.events and (now - self.events[0]) > self.window_s:
+            self.events.popleft()
+        return self.mu + sum(self.alpha * math.exp(-self.beta * (now - t)) for t in self.events)
+
+    def state(self) -> str:
+        i = self.intensity()
+        if i > self.mu * 4.0:
+            return "CASCADE"
+        if i > self.mu * 2.0:
+            return "ELEVATED"
+        return "NORMAL"
+
 # ── ASCII Logo ────────────────────────────────────────────────────────────────
 LOGO = """
 [bold green]
@@ -67,98 +125,93 @@ LOGO = """
 # ── Terminal Chart Helper ──────────────────────────────────────────────────────
 class TerminalCandleChart:
     """
-    Renders simple ASCII/Unicode candlestick charts.
+    Renders clean, time-bucketed ASCII/Unicode candlestick charts with true 5-second intervals.
     """
-    def __init__(self, width: int = 50, height: int = 10) -> None:
+    def __init__(self, width: int = 50, height: int = 8, bucket_seconds: float = 5.0) -> None:
         self.width = width
         self.height = height
-        # Stores historical (open, high, low, close, volume, is_up) candles
-        self.candles: list[tuple[float, float, float, float, float, bool]] = []
+        self.bucket_seconds = bucket_seconds
+        self.current_bucket: int | None = None
+        # Stores historical candles: [open, high, low, close, volume, is_up]
+        self.candles: list[list[Any]] = []
 
     def add_trade(self, price: float, qty: float, is_buy: bool) -> None:
-        """Add a trade to the latest candle bucket."""
-        # 5-second candle windows
-        now_bucket = int(time.time() / 5)
+        """Add a trade to the deterministic time bucket."""
+        bucket = int(time.time() // self.bucket_seconds)
         
-        if not self.candles:
-            # First candle
-            self.candles.append((price, price, price, price, qty, is_buy))
-            return
-            
-        # Check if latest candle is in the current bucket
-        # (Simply group by size for simplicity if precise timestamp is not available)
-        # For simplicity, we just keep the last 50 candles, updating the latest one
-        # until a time interval has elapsed.
-        last_o, last_h, last_l, last_c, last_v, last_side = self.candles[-1]
-        
-        # New candle every 3 seconds for fast visual updates
-        if len(self.candles) > 0 and int(time.time()) % 3 == 0:
-            # Close current and start new
-            self.candles.append((price, price, price, price, qty, is_buy))
+        if self.current_bucket != bucket or not self.candles:
+            self.candles.append([price, price, price, price, qty, is_buy])
+            self.current_bucket = bucket
         else:
-            # Update latest candle
-            self.candles[-1] = (
-                last_o,
-                max(last_h, price),
-                min(last_l, price),
-                price,
-                last_v + qty,
-                is_buy
-            )
+            o, h, l, c, v, _ = self.candles[-1]
+            self.candles[-1] = [o, max(h, price), min(l, price), price, v + qty, is_buy]
             
         # Constrain to window width
         if len(self.candles) > self.width:
             self.candles.pop(0)
 
     def render(self) -> Text:
-        """Draw candles in the terminal using rich Text."""
+        """Draw true time-bucketed candlestick bars in the terminal."""
         if not self.candles:
-            return Text("Waiting for trades...", style="yellow")
+            return Text("Waiting for trades to form 5s candles...", style="yellow")
             
         # Calculate min/max price range for vertical scaling
-        prices = [p for c in self.candles for p in (c[1], c[2])] # Highs and Lows
-        if not prices:
-            return Text("Chart Empty", style="dim")
-            
-        min_p = min(prices)
-        max_p = max(prices)
+        highs = [float(c[1]) for c in self.candles]
+        lows = [float(c[2]) for c in self.candles]
+        min_p = min(lows)
+        max_p = max(highs)
         p_range = max_p - min_p if max_p != min_p else 1.0
         
-        # Grid of characters
-        grid = [[" " for _ in range(len(self.candles))] for _ in range(self.height)]
+        # Grid of characters: height rows × len(candles) columns
+        n_cols = len(self.candles)
+        grid = [[" " for _ in range(n_cols)] for _ in range(self.height)]
         colors = []
         
         for col, (o, h, l, c, v, is_buy) in enumerate(self.candles):
-            # Normalize high, low, open, close to grid rows (0 is bottom, height-1 is top)
-            row_h = int((h - min_p) / p_range * (self.height - 1))
-            row_l = int((l - min_p) / p_range * (self.height - 1))
-            row_o = int((o - min_p) / p_range * (self.height - 1))
-            row_c = int((c - min_p) / p_range * (self.height - 1))
+            # Normalize to grid rows (0 is bottom, height-1 is top)
+            row_h = int(round((h - min_p) / p_range * (self.height - 1)))
+            row_l = int(round((l - min_p) / p_range * (self.height - 1)))
+            row_o = int(round((o - min_p) / p_range * (self.height - 1)))
+            row_c = int(round((c - min_p) / p_range * (self.height - 1)))
             
-            # Wicks (Low to High)
+            # Clamp bounds
+            row_h = max(0, min(self.height - 1, row_h))
+            row_l = max(0, min(self.height - 1, row_l))
+            row_o = max(0, min(self.height - 1, row_o))
+            row_c = max(0, min(self.height - 1, row_c))
+            
+            # 1. Draw Wicks (Low to High)
             for r in range(row_l, row_h + 1):
                 grid[r][col] = "│"
                 
-            # Body (Open to Close)
+            # 2. Draw Body (Open to Close)
             body_start = min(row_o, row_c)
             body_end = max(row_o, row_c)
-            for r in range(body_start, body_end + 1):
-                grid[r][col] = "█"
+            if body_start == body_end:
+                grid[body_start][col] = "─"  # Doji
+            else:
+                for r in range(body_start, body_end + 1):
+                    grid[r][col] = "█"
                 
-            colors.append("green" if c >= o else "red")
+            # Bullish (Green) or Bearish (Red)
+            colors.append("bold green" if c >= o else "bold red")
             
         # Build the final Rich Text line by line (top to bottom)
         out = Text()
         for r in reversed(range(self.height)):
-            for col in range(len(self.candles)):
+            for col in range(n_cols):
                 char = grid[r][col]
                 color = colors[col]
-                # If wick, make it dimmer or standard color
-                out.append(char, style=color)
+                # If space, keep default, otherwise apply candle color
+                if char == " ":
+                    out.append(" ")
+                else:
+                    out.append(char, style=color)
             out.append("\n")
             
-        # Append price scale markers at the bottom
-        out.append(f"Price Range: ${min_p:,.2f} – ${max_p:,.2f}", style="dim")
+        # Price range and latest close footer
+        latest_close = float(self.candles[-1][3])
+        out.append(f"Last: {latest_close:.2f} │ Range: {min_p:.2f} – {max_p:.2f} (5s candles)", style="dim cyan")
         return out
 
 
@@ -175,6 +228,7 @@ class CollectionDashboard:
         
         self.recent_trades: list[TradeTick] = []
         self.chart = TerminalCandleChart(width=60, height=8)
+        self.hawkes_gauge = HawkesIntensityGauge(mu=0.5, alpha=0.8, beta=2.0, window_s=30.0)
         
         # Instantiate Collector without C++ engine mirror for clean CLI operation
         self.collector = Collector(
@@ -199,8 +253,9 @@ class CollectionDashboard:
         if len(self.recent_trades) > 10:
             self.recent_trades.pop(0)
             
-        # Feed chart
+        # Feed chart & Hawkes intensity gauge
         self.chart.add_trade(tick.price, tick.qty, not tick.is_buyer_maker)
+        self.hawkes_gauge.on_trade()
 
     def generate_layout(self) -> Layout:
         # Layout definition
@@ -217,12 +272,18 @@ class CollectionDashboard:
             Layout(name="right", ratio=1)
         )
         
-        # Split right section vertically
-        layout["right"].split(
-            Layout(name="chart", ratio=1),
-            Layout(name="trades", size=10)
+        # Split left section vertically into order book and quant engine
+        layout["left"].split(
+            Layout(name="book", ratio=1),
+            Layout(name="quant", size=11)
         )
         
+        # Split right section vertically into price chart and trade feed
+        layout["right"].split(
+            Layout(name="chart", ratio=1),
+            Layout(name="trades", size=11)
+        )
+
         # 1. Header Rendering — use Text with markup=True (Text.assemble treats 2nd arg
         #    as a *style*, not markup, so raw markup strings would appear literally there)
         uptime = int(time.time() - self.start_time)
@@ -263,7 +324,7 @@ class CollectionDashboard:
 
         layout["header"].update(Panel(Align.center(header_text), border_style="green"))
 
-        # 2. Left Panel: Order Book depth
+        # 2. Left-Top Panel: Order Book depth
         book = self.collector.depth_mgr.book
         bb = book.best_bid()
         ba = book.best_ask()
@@ -305,32 +366,78 @@ class CollectionDashboard:
                 msg = "[yellow]◑ WebSocket live — fetching order book snapshot from Binance REST API...[/yellow]"
             book_table.add_row(msg, "", "", "")
 
-        layout["left"].update(Panel(book_table, border_style="cyan", title="Order Book Depth"))
+        layout["book"].update(Panel(book_table, border_style="cyan", title="Order Book Depth"))
+
+        # Hawkes state calculation for visual tie-in
+        h_state = self.hawkes_gauge.state()
+        h_val = self.hawkes_gauge.intensity()
+        is_cascade = (h_state == "CASCADE")
+
+        # 3. Left-Bottom Panel: Quantitative Microstructure Engine Panel
+        quant_table = Table(show_header=False, expand=True, box=None, padding=(0, 1))
+        quant_table.add_column("Metric", style="bold cyan", justify="left")
+        quant_table.add_column("Output", justify="right")
+
+        if bb is not None and ba is not None:
+            bid_p, bid_v = bb[0], bb[1]
+            ask_p, ask_v = ba[0], ba[1]
+            mid = (bid_p + ask_p) / 2.0
+            obi = order_flow_imbalance(bid_v, ask_v)
+            m_price = microprice(bid_p, ask_p, bid_v, ask_v)
+            delta = m_price - mid
+
+            # Avellaneda-Stoikov quotes (starting calibration parameters)
+            gamma, sigma, time_rem, kappa = 0.1, 1.0, 1.0, 1.5
+            as_bid, as_ask = as_quotes(mid, 0.0, gamma, sigma, time_rem, kappa)
+
+            obi_style = "bold green" if obi > 0 else ("bold red" if obi < 0 else "dim")
+            delta_style = "bold green" if delta > 0 else ("bold red" if delta < 0 else "dim")
+            
+            if h_state == "CASCADE":
+                h_style = "bold red"
+            elif h_state == "ELEVATED":
+                h_style = "bold yellow"
+            else:
+                h_style = "bold green"
+
+            quant_table.add_row("OBI Ratio", f"[{obi_style}]{obi:+.2f}[/{obi_style}]")
+            quant_table.add_row("Micro-price", f"{m_price:.2f}")
+            quant_table.add_row("Micro−Mid Δ", f"[{delta_style}]{delta:+.3f}[/{delta_style}]")
+            quant_table.add_row("AS Bid Quote", f"{as_bid:.2f}")
+            quant_table.add_row("AS Ask Quote", f"{as_ask:.2f}")
+            quant_table.add_row("Hawkes λ", f"[{h_style}]{h_val:.2f} ({h_state})[/{h_style}]")
+        else:
+            quant_table.add_row("Status", "[yellow]Syncing order book...[/yellow]")
+
+        layout["quant"].update(Panel(quant_table, border_style="magenta", title="Quantitative Microstructure Engine"))
         
-        # 3. Chart Panel
+        # 4. Right-Top Panel: Chart Panel
         layout["chart"].update(Panel(self.chart.render(), border_style="magenta", title="Real-Time Price Candles (5s)"))
-        
-        # 4. Trades Panel
+
+        # 5. Right-Bottom Panel: Trades Panel
+        trades_title = "Live Trade Feed [bold red](CASCADE)[/bold red]" if is_cascade else "Live Trade Feed"
         trades_table = Table(show_header=True, expand=True, box=None)
         trades_table.add_column("Time", justify="center")
-        trades_table.add_column("Taker Side", justify="center")
+        trades_table.add_column("Side", justify="center")
         trades_table.add_column("Price ($)", justify="right")
-        trades_table.add_column("Size (BTC)", justify="right")
+        trades_table.add_column("Size", justify="right")
         
         for t in reversed(self.recent_trades):
             time_str = datetime.fromtimestamp(t.event_time / 1000, tz=timezone.utc).strftime("%H:%M:%S")
             side_color = "red" if t.is_buyer_maker else "green"
             side_str = "SELL" if t.is_buyer_maker else "BUY"
+            row_style = "bold yellow" if is_cascade else None
             trades_table.add_row(
                 time_str,
                 f"[{side_color}]{side_str}[/{side_color}]",
                 f"{t.price:.2f}",
-                f"{t.qty:.5f}"
+                f"{t.qty:.4f}",
+                style=row_style
             )
             
-        layout["trades"].update(Panel(trades_table, border_style="yellow", title="Live Trade Feed"))
+        layout["trades"].update(Panel(trades_table, border_style="yellow" if not is_cascade else "red", title=trades_title))
         
-        # 5. Footer Panel
+        # 6. Footer Panel
         footer_text = Text(
             f"Stats: {self.depth_events:,} Depth events │ {self.trades_processed:,} Trades │ {self.total_volume:.4f} BTC Volume\n"
             f"Press Ctrl+C to stop collection and return to CLI Menu.",
