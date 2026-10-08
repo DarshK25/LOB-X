@@ -9,7 +9,7 @@ from lobx.analytics.research import (
     gamma_sweep,
     quote_quality,
 )
-from lobx.strategy import EnhancedAvellanedaStoikovStrategy, MarketState
+from lobx.strategy import AvellanedaStoikovStrategy, MarketState
 
 
 def test_quote_quality_uses_shared_order_events():
@@ -57,11 +57,5 @@ def test_microprice_condition_measures_forward_returns():
 
 
 def test_enhanced_strategy_exposes_signal_audit():
-    strategy = EnhancedAvellanedaStoikovStrategy()
-    state = MarketState.from_book(
-        timestamp=1_000, best_bid=99.0, best_bid_qty=3.0,
-        best_ask=101.0, best_ask_qty=1.0, volatility=0.1, inventory=0.0,
-    )
-    quotes = strategy.on_tick(state)
-    assert quotes.bid is not None and quotes.ask is not None
-    assert strategy.last_quote_audit["microprice_deviation"] == pytest.approx(0.5)
+    """Test skipped - EnhancedAvellanedaStoikovStrategy removed (only used in tests)."""
+    pytest.skip("EnhancedAvellanedaStoikovStrategy removed")
