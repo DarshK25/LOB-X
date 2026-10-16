@@ -1,5 +1,12 @@
 """Avellaneda-Stoikov sub-package."""
+from lobx.models.avellaneda.model import ASQuote, calculate_quote
+from lobx.models.avellaneda.optimal_spread import half_spread, optimal_spread
 from lobx.models.avellaneda.reservation_price import reservation_price
-from lobx.models.avellaneda.optimal_spread import optimal_spread, half_spread
-from lobx.models.avellaneda.market_maker import AvellanedaStoikovMM
-__all__ = ["reservation_price", "optimal_spread", "half_spread", "AvellanedaStoikovMM"]
+
+__all__ = [
+    "ASQuote",
+    "calculate_quote",
+    "half_spread",
+    "optimal_spread",
+    "reservation_price",
+]

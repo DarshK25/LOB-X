@@ -27,6 +27,10 @@ Extracting it to analytics/ means:
 from __future__ import annotations
 
 import math
+from collections import deque
+from collections.abc import Iterable
+
+import pandas as pd
 
 
 class EWMAVolatilityEstimator:
@@ -51,6 +55,7 @@ class EWMAVolatilityEstimator:
         self._last_mid:  float | None = None
         self._variance:  float = 0.0
         self._n_updates: int   = 0   # track how many updates received
+        self._last_log_return: float = 0.0
 
     def update(self, mid_price: float) -> float:
         """Feed one mid-price observation.  Returns current volatility estimate.
@@ -74,6 +79,7 @@ class EWMAVolatilityEstimator:
             return 0.0
 
         log_return = math.log(mid_price / self._last_mid)
+        self._last_log_return = log_return
         self._variance = (
             self.decay * self._variance
             + (1.0 - self.decay) * log_return ** 2
@@ -87,6 +93,11 @@ class EWMAVolatilityEstimator:
         return math.sqrt(self._variance) if self._n_updates > 0 else 0.0
 
     @property
+    def last_log_return(self) -> float:
+        """Return the return used by the latest volatility update."""
+        return self._last_log_return
+
+    @property
     def is_warmed_up(self) -> bool:
         """True once at least one log-return has been computed."""
         return self._n_updates > 0
@@ -96,3 +107,62 @@ class EWMAVolatilityEstimator:
         self._last_mid  = None
         self._variance  = 0.0
         self._n_updates = 0
+        self._last_log_return = 0.0
+
+
+class RollingVolatilityEstimator:
+    """Rolling sample standard deviation of log returns."""
+
+    def __init__(self, window: int = 60) -> None:
+        if window < 2:
+            raise ValueError("window must be at least 2")
+        self.window = window
+        self._returns: deque[float] = deque(maxlen=window)
+        self._last_mid: float | None = None
+
+    def update(self, mid_price: float) -> float:
+        if self._last_mid is not None and mid_price > 0 and self._last_mid > 0:
+            self._returns.append(math.log(mid_price / self._last_mid))
+        self._last_mid = mid_price
+        return self.current()
+
+    def current(self) -> float:
+        return float(pd.Series(self._returns).std(ddof=0)) if self._returns else 0.0
+
+
+class RealizedVolatilityEstimator:
+    """Rolling square-root realized variance: sqrt(sum(r_i^2))."""
+
+    def __init__(self, window: int = 60) -> None:
+        if window < 1:
+            raise ValueError("window must be positive")
+        self.window = window
+        self._returns: deque[float] = deque(maxlen=window)
+        self._last_mid: float | None = None
+
+    def update(self, mid_price: float) -> float:
+        if self._last_mid is not None and mid_price > 0 and self._last_mid > 0:
+            self._returns.append(math.log(mid_price / self._last_mid))
+        self._last_mid = mid_price
+        return self.current()
+
+    def current(self) -> float:
+        return math.sqrt(sum(value * value for value in self._returns))
+
+
+def compare_volatility_estimators(
+    mid_prices: Iterable[float], *, window: int = 60, decay: float = 0.98
+) -> pd.DataFrame:
+    """Return rolling, EWMA, and realized-volatility values for one price path."""
+    rolling = RollingVolatilityEstimator(window)
+    ewma = EWMAVolatilityEstimator(decay)
+    realized = RealizedVolatilityEstimator(window)
+    rows = []
+    for index, mid_price in enumerate(mid_prices):
+        rows.append({
+            "observation": index,
+            "rolling": rolling.update(float(mid_price)),
+            "ewma": ewma.update(float(mid_price)),
+            "realized": realized.update(float(mid_price)),
+        })
+    return pd.DataFrame(rows)

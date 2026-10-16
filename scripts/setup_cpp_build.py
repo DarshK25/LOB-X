@@ -186,7 +186,7 @@ def main() -> None:
     print("  BUILD COMPLETE")
     print("  Next steps:")
     print("    python scripts/run_collector.py          (full pipeline with C++ engine)")
-    print("    python scripts/verify_engine_mirror.py  (confirm C++ book matches Binance)")
+    print("    (verify_engine_mirror.py archived - use C++ tests for validation)")
     print("=" * 64)
 
 

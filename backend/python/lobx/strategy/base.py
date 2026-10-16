@@ -16,32 +16,104 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-
 @dataclass(frozen=True)
 class MarketState:
-    """A frozen snapshot of all the market information a strategy may read.
+    """Canonical, evidence-backed snapshot of the current market state.
 
-    Attributes
-    ----------
-    timestamp       : exchange event time in milliseconds
-    mid_price       : (best_bid + best_ask) / 2
-    best_bid        : best resting bid price
-    best_bid_qty    : quantity at best bid
-    best_ask        : best resting ask price
-    best_ask_qty    : quantity at best ask
-    spread          : best_ask - best_bid
-    volatility      : current EWMA volatility estimate (0.0 before warm-up)
-    inventory       : current signed position (+ = long, - = short)
+    The real dataclass fields are the legacy names used by the strategy codebase,
+    and compatibility aliases are exposed via properties for the hardening-phase
+    names requested in the audit. This keeps the state contract single-sourced and
+    avoids duplicate implementations.
     """
-    timestamp:    int
-    mid_price:    float
-    best_bid:     float
+
+    timestamp: int
+    best_bid: float
+    best_ask: float
+    mid_price: float
+    spread: float
     best_bid_qty: float
-    best_ask:     float
     best_ask_qty: float
-    spread:       float
-    volatility:   float
-    inventory:    float
+    volatility: float = 0.0
+    inventory: float = 0.0
+    imbalance: float = 0.0
+    microprice: float | None = None
+    microprice_deviation: float = 0.0
+    log_return: float = 0.0
+    trade_price: float | None = None
+    trade_quantity: float | None = None
+    trade_side: str | None = None
+
+    @property
+    def mid(self) -> float:
+        return self.mid_price
+
+    @property
+    def bid_depth(self) -> float:
+        return self.best_bid_qty
+
+    @property
+    def ask_depth(self) -> float:
+        return self.best_ask_qty
+
+    @property
+    def return_(self) -> float:
+        return self.log_return
+
+    @property
+    def return_value(self) -> float:
+        return self.log_return
+
+    @property
+    def return__(self) -> float:
+        return self.log_return
+
+    @classmethod
+    def from_book(
+        cls,
+        *,
+        timestamp: int,
+        best_bid: float,
+        best_bid_qty: float,
+        best_ask: float,
+        best_ask_qty: float,
+        volatility: float,
+        inventory: float,
+        log_return: float = 0.0,
+        trade_price: float | None = None,
+        trade_quantity: float | None = None,
+        trade_side: str | None = None,
+    ) -> "MarketState":
+        """Build the canonical state from one valid two-sided book."""
+        if best_bid >= best_ask:
+            raise ValueError("best_bid must be strictly below best_ask")
+        total_depth = best_bid_qty + best_ask_qty
+        mid = (best_bid + best_ask) / 2.0
+        imbalance = (
+            (best_bid_qty - best_ask_qty) / total_depth
+            if total_depth > 0.0 else 0.0
+        )
+        microprice = (
+            (best_ask * best_bid_qty + best_bid * best_ask_qty) / total_depth
+            if total_depth > 0.0 else mid
+        )
+        return cls(
+            timestamp=timestamp,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=mid,
+            spread=best_ask - best_bid,
+            best_bid_qty=best_bid_qty,
+            best_ask_qty=best_ask_qty,
+            volatility=volatility,
+            inventory=inventory,
+            imbalance=imbalance,
+            microprice=microprice,
+            microprice_deviation=microprice - mid,
+            log_return=log_return,
+            trade_price=trade_price,
+            trade_quantity=trade_quantity,
+            trade_side=trade_side,
+        )
 
 
 @dataclass(frozen=True)

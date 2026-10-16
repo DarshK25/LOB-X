@@ -4,6 +4,7 @@ import pytest
 from lobx.strategy.base import MarketState
 from lobx.strategy.fixed_spread import FixedSpreadStrategy
 from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
+from lobx.models.avellaneda.model import calculate_quote
 from lobx.strategy.no_trade import NoTradeStrategy
 from lobx.strategy.inventory_skew import InventorySkewStrategy
 
@@ -75,6 +76,31 @@ class TestFixedSpreadStrategy:
 
 class TestAvellanedaStoikovStrategy:
 
+    def test_strategy_matches_canonical_model(self):
+        state = make_state(
+            mid_price=60000.0,
+            inventory=0.01,
+            volatility=0.25,
+            timestamp=1_000,
+        )
+        strategy = AvellanedaStoikovStrategy(
+            gamma=0.2,
+            kappa=1.5,
+            horizon_seconds=300.0,
+            min_spread=0.02,
+        )
+        actual = strategy.on_tick(state)
+        expected = calculate_quote(
+            mid=state.mid_price,
+            inventory=state.inventory,
+            gamma=0.2,
+            sigma=0.25,
+            time_remaining=300.0,
+            kappa=1.5,
+        )
+        assert actual.bid.price == round(expected.bid, 2)
+        assert actual.ask.price == round(expected.ask, 2)
+
     def test_returns_valid_quote_pair(self):
         strat = AvellanedaStoikovStrategy(gamma=0.1, kappa=1.5)
         q = strat.on_tick(make_state())
@@ -139,6 +165,26 @@ def test_no_trade_strategy_never_quotes():
     quotes = NoTradeStrategy().on_tick(make_state())
     assert quotes.bid is None
     assert quotes.ask is None
+
+
+def test_market_state_from_book_calculates_microstructure_fields():
+    state = MarketState.from_book(
+        timestamp=1,
+        best_bid=99.0,
+        best_bid_qty=3.0,
+        best_ask=101.0,
+        best_ask_qty=1.0,
+        volatility=0.1,
+        inventory=0.0,
+    )
+    assert state.mid_price == 100.0
+    assert state.mid == 100.0
+    assert state.bid_depth == 3.0
+    assert state.ask_depth == 1.0
+    assert state.spread == 2.0
+    assert state.imbalance == pytest.approx(0.5)
+    assert state.microprice == pytest.approx(100.5)
+    assert state.microprice_deviation == pytest.approx(0.5)
 
 
 def test_inventory_skew_moves_quotes_away_from_long_inventory():

@@ -19,13 +19,19 @@ class RegimeConfig:
     sample_interval_ms: int = 1_000
     volatility_window: int = 60
     markout_horizon_ms: int = 1_000
+    volatility_high_quantile: float = 0.80
+    toxic_imbalance_threshold: float = 0.80
 
     def __post_init__(self) -> None:
         if self.sample_interval_ms <= 0 or self.volatility_window < 2 or self.markout_horizon_ms < 0:
             raise ValueError("invalid regime-analysis intervals")
 
 
-def sample_market_states(depth: pd.DataFrame, config: RegimeConfig | None = None) -> pd.DataFrame:
+def sample_market_states(
+    depth: pd.DataFrame,
+    config: RegimeConfig | None = None,
+    trades: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Reconstruct and sample a valid L2 book without using future updates."""
     config = config or RegimeConfig()
     required = {"event_time", "side", "price", "qty"}
@@ -53,6 +59,7 @@ def sample_market_states(depth: pd.DataFrame, config: RegimeConfig | None = None
                 "mid_price": (bid[0] + ask[0]) / 2.0,
                 "spread": ask[0] - bid[0],
                 "top_liquidity": bid[1] + ask[1],
+                "imbalance": (bid[1] - ask[1]) / (bid[1] + ask[1]) if bid[1] + ask[1] else 0.0,
             }
         )
         next_sample_at = timestamp + config.sample_interval_ms
@@ -64,9 +71,40 @@ def sample_market_states(depth: pd.DataFrame, config: RegimeConfig | None = None
         lambda value: None if pd.isna(value) else math.log1p(value)
     )
     states["volatility_bps"] = log_returns.rolling(config.volatility_window, min_periods=config.volatility_window).std() * 10_000
+    states["price_movement_bps"] = log_returns.rolling(config.volatility_window, min_periods=config.volatility_window).sum() * 10_000
+    states["trade_intensity"] = 0.0
+    if trades is not None and not trades.empty:
+        counts = trades.groupby((trades.event_time // config.sample_interval_ms) * config.sample_interval_ms).size()
+        states["trade_intensity"] = states.timestamp.map(counts).fillna(0.0) * (1000.0 / config.sample_interval_ms)
     states["volatility_regime"] = _terciles(states["volatility_bps"])
     states["liquidity_regime"] = _terciles(states["top_liquidity"])
+    states["regime"] = classify_regimes(states, config)
     return states
+
+
+def classify_regimes(states: pd.DataFrame, config: RegimeConfig | None = None) -> pd.Series:
+    """Classify each sampled state using only features known at that timestamp."""
+    config = config or RegimeConfig()
+    required = {"volatility_bps", "spread", "imbalance", "trade_intensity", "price_movement_bps"}
+    if not required.issubset(states.columns):
+        raise ValueError(f"states missing columns: {sorted(required - set(states.columns))}")
+    volatility_cutoff = states.volatility_bps.quantile(config.volatility_high_quantile)
+    spread_cutoff = states.spread.quantile(0.80)
+    labels = []
+    for row in states.itertuples(index=False):
+        if pd.isna(row.volatility_bps):
+            labels.append("NORMAL")
+        elif abs(row.imbalance) >= config.toxic_imbalance_threshold and row.volatility_bps >= volatility_cutoff:
+            labels.append("TOXIC")
+        elif row.volatility_bps >= volatility_cutoff:
+            labels.append("VOLATILE")
+        elif abs(row.price_movement_bps) > row.volatility_bps * 1.5 and row.trade_intensity > 0:
+            labels.append("TRENDING")
+        elif row.spread >= spread_cutoff and row.trade_intensity == 0:
+            labels.append("CALM")
+        else:
+            labels.append("NORMAL")
+    return pd.Series(labels, index=states.index, dtype="object")
 
 
 def attribute_fills_to_regimes(

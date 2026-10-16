@@ -71,5 +71,10 @@ papers/*.pdf
 Thumbs.db
 .idea/
 .vscode/
+.kiro/
 *.swp
 *.swo
+
+# ─── External References ──────────────────────────────────────────────────────
+# Third-party repositories cloned as implementation references (not dependencies)
+_reference/

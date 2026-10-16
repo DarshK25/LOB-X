@@ -37,6 +37,82 @@ class InventoryTracker:
 
     # Internal: count fills for debugging / logging
     _fill_count: int = field(default=0, init=False, repr=False)
+    _last_observed_at: int | None = field(default=None, init=False, repr=False)
+    _weighted_inventory: float = field(default=0.0, init=False, repr=False)
+    _weighted_square: float = field(default=0.0, init=False, repr=False)
+    _observed_duration: int = field(default=0, init=False, repr=False)
+    _long_duration: int = field(default=0, init=False, repr=False)
+    _short_duration: int = field(default=0, init=False, repr=False)
+    _distribution: list[dict[str, float | int]] = field(default_factory=list, init=False, repr=False)
+    _peak_abs_inventory: float = field(default=0.0, init=False, repr=False)
+    _half_life_ms: int | None = field(default=None, init=False, repr=False)
+    _peak_observed_at: int | None = field(default=None, init=False, repr=False)
+
+    def observe(self, timestamp: int) -> None:
+        """Record a timestamped inventory observation.
+
+        Live depth and trade callbacks use separate WebSocket streams, so a
+        late callback can have an older exchange timestamp. Such observations
+        are ignored because they cannot contribute valid forward duration.
+        Offline replay remains chronological by construction.
+        """
+        if self._last_observed_at is not None and timestamp < self._last_observed_at:
+            return
+        if self._last_observed_at is not None:
+            duration = timestamp - self._last_observed_at
+            self._weighted_inventory += self.position * duration
+            self._weighted_square += self.position * self.position * duration
+            self._observed_duration += duration
+            if self.position > 0:
+                self._long_duration += duration
+            elif self.position < 0:
+                self._short_duration += duration
+        absolute = abs(self.position)
+        if absolute > self._peak_abs_inventory:
+            self._peak_abs_inventory = absolute
+            self._peak_observed_at = timestamp
+        elif (
+            self._half_life_ms is None
+            and self._peak_observed_at is not None
+            and absolute <= self._peak_abs_inventory / 2.0
+            and self._peak_abs_inventory > 0.0
+        ):
+            self._half_life_ms = timestamp - self._peak_observed_at
+        self._last_observed_at = timestamp
+        self._distribution.append({"timestamp": timestamp, "inventory": self.position})
+
+    @property
+    def max_inventory(self) -> float:
+        return max((abs(float(item["inventory"])) for item in self._distribution), default=abs(self.position))
+
+    @property
+    def average_inventory(self) -> float:
+        if self._observed_duration == 0:
+            return self.position
+        return self._weighted_inventory / self._observed_duration
+
+    @property
+    def inventory_variance(self) -> float:
+        if self._observed_duration == 0:
+            return 0.0
+        mean = self.average_inventory
+        return max(self._weighted_square / self._observed_duration - mean * mean, 0.0)
+
+    @property
+    def inventory_half_life_ms(self) -> int | None:
+        return self._half_life_ms
+
+    @property
+    def time_spent_long_ms(self) -> int:
+        return self._long_duration
+
+    @property
+    def time_spent_short_ms(self) -> int:
+        return self._short_duration
+
+    @property
+    def inventory_distribution(self) -> list[dict[str, float | int]]:
+        return list(self._distribution)
 
     def on_fill(self, side: str, price: float, qty: float) -> None:
         """Update position and PnL from one fill.
@@ -116,3 +192,13 @@ class InventoryTracker:
         self.avg_entry_price = 0.0
         self.realized_pnl    = 0.0
         self._fill_count     = 0
+        self._last_observed_at = None
+        self._weighted_inventory = 0.0
+        self._weighted_square = 0.0
+        self._observed_duration = 0
+        self._long_duration = 0
+        self._short_duration = 0
+        self._distribution.clear()
+        self._peak_abs_inventory = 0.0
+        self._half_life_ms = None
+        self._peak_observed_at = None

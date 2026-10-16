@@ -53,6 +53,15 @@ def test_replay_fills_then_flattens_and_reports_pnl():
     # The reference mid is 100.50, so a buy fill at 99.00 has a +1.50 USDT
     # per BTC one-second markout; the fill size is 0.001 BTC.
     assert result.summary["mean_1s_markout"] == pytest.approx(0.0015)
+    assert result.summary["mean_100ms_markout"] == pytest.approx(0.0015)
+    assert result.summary["mean_5000ms_markout"] is None
+    assert result.summary["markout_observations"] == 3
+    assert len(result.markouts) == 6
+    assert sum(record["available"] for record in result.markouts) == 3
+    assert sum(not record["available"] for record in result.markouts) == 3
+    assert any(event["event_type"] == "TRADE_RECEIVED" for event in result.events)
+    assert any(event["event_type"] == "FILL" for event in result.events)
+    assert any(event["event_type"] == "QUOTE_CALCULATED" for event in result.events)
 
 
 def test_latency_prevents_same_window_fill():
@@ -63,6 +72,19 @@ def test_latency_prevents_same_window_fill():
     )
     assert result.summary["fills"] == 0
     assert result.summary["net_pnl"] == pytest.approx(0.0)
+
+
+def test_unavailable_markouts_are_explicitly_recorded():
+    depth, trades = _capture()
+    result = HistoricalReplay(_config()).run(
+        depth.iloc[:100],
+        trades,
+        lambda: FixedSpreadStrategy(half_spread=1.5, qty=0.001),
+    )
+    assert result.summary["markout_observations"] == 0
+    assert len(result.markouts) == 6
+    assert all(not record["available"] for record in result.markouts)
+    assert sum(event["event_type"] == "MARKOUT_UNAVAILABLE" for event in result.events) == 6
 
 
 def test_replay_rejects_depth_diffs_without_snapshot():

@@ -60,8 +60,7 @@ Collector — the central orchestrator of the Phase 1 data pipeline.
          │                  against THIS book, not the Python one.          │
          │                                                                  │
          │                ↓ on_book_update callbacks fire here ─────────────┘
-         │                  (watch_live.py, verify_engine_mirror.py,
-         │                   later: StrategyRunner)
+         │                  (watch_live.py, later: StrategyRunner)
          │
          └─── "@trade" in stream ─────────────────────────────────────────►
                                                                             │
@@ -153,9 +152,11 @@ class Collector:
         enable_engine_mirror: bool = True,
         flush_every: int = 500,
         heartbeat_s: int = 30,
+        enable_storage: bool = False,
     ) -> None:
         self.symbol = symbol.upper()
         self._heartbeat_s = heartbeat_s
+        self._enable_storage = enable_storage
 
         # ── Order Book #1: Python reference book ──────────────────────────────
         self.depth_mgr = DepthStreamManager(self.symbol)
@@ -174,21 +175,19 @@ class Collector:
                     "Build the C++ extension to enable it (see docs/architecture.md)."
                 )
 
-        # ── Storage — Parquet (local / artifact) ──────────────────────────────
-        # flush_every=500: at BTC/USDT rates (~50 depth rows/s after sync),
-        # this flushes every ~10 s.  Files stay readable from another terminal.
-        self._trade_writer = RotatingParquetWriter(
-            data_dir, "trades", TRADE_SCHEMA, flush_every=flush_every
-        )
-        self._depth_writer = RotatingParquetWriter(
-            data_dir, "depth", DEPTH_SCHEMA, flush_every=flush_every
-        )
-
-        # ── Storage — PostgreSQL (Neon, persistent long-term) ─────────────────
-        # Trades are also streamed to Neon for persistent SQL-queryable storage.
-        # DATABASE_URL env var must be set (added to GitHub Actions as a secret).
-        # If not set, PostgresTradeWriter is disabled silently — local dev still works.
-        self._pg_writer = PostgresTradeWriter(database_url=os.environ.get("DATABASE_URL"))
+        # ── Storage (optional — disabled for pure live streaming) ─────────────
+        if enable_storage:
+            self._trade_writer = RotatingParquetWriter(
+                data_dir, "trades", TRADE_SCHEMA, flush_every=flush_every
+            )
+            self._depth_writer = RotatingParquetWriter(
+                data_dir, "depth", DEPTH_SCHEMA, flush_every=flush_every
+            )
+            self._pg_writer = PostgresTradeWriter(database_url=os.environ.get("DATABASE_URL"))
+        else:
+            self._trade_writer = None
+            self._depth_writer = None
+            self._pg_writer = None
 
         # ── Callbacks (register with on_book_update / on_trade) ───────────────
         # These fire AFTER storage writes, so callbacks always see consistent state.
@@ -203,7 +202,7 @@ class Collector:
             on_disconnect=self._on_disconnect,
         )
 
-        self.ws_status = "Disconnected"
+        self.ws_status = "Initializing..."
         self.ws_error: str | None = None
 
 
@@ -251,18 +250,31 @@ class Collector:
         """
         logger.info("Collector starting for %s", self.symbol)
 
-        # Connect to Neon PostgreSQL in the background (no-op if DATABASE_URL is not set)
-        db_task = asyncio.create_task(self._pg_writer.connect())
-
         self.ws_status = "Connecting..."
         ws_task = asyncio.create_task(self._ws.run())
         hb_task = asyncio.create_task(self._heartbeat())
+
+        db_task = None
+        if self._pg_writer is not None:
+            async def _connect_db():
+                try:
+                    await self._pg_writer.connect()
+                    if self._pg_writer.is_enabled:
+                        logger.info("PostgreSQL trade writer connected.")
+                    else:
+                        logger.info("PostgreSQL writer disabled.")
+                except Exception as exc:
+                    logger.warning("PostgreSQL connect raised unexpectedly: %s", exc)
+
+            db_task = asyncio.create_task(_connect_db())
+
         try:
-            await asyncio.gather(ws_task, hb_task, db_task)
+            await asyncio.gather(ws_task, hb_task)
         except asyncio.CancelledError:
             ws_task.cancel()
             hb_task.cancel()
-            db_task.cancel()
+            if db_task and not db_task.done():
+                db_task.cancel()
             raise
 
     def stop(self) -> None:
@@ -274,24 +286,17 @@ class Collector:
         await self._ws.force_disconnect()
 
     def close(self) -> None:
-        """
-        Flush all buffers and close Parquet file handles.
-        ALWAYS call this on shutdown (the run_collector.py entrypoint does it
-        in a try/finally block — make sure your own scripts do the same).
-
-        Note: Postgres writer is closed via close_async() — the sync close()
-        here handles only Parquet. The run_collector.py entrypoint calls
-        close_async() if an event loop is available.
-        """
-        logger.info("Flushing and closing Parquet writers…")
-        self._trade_writer.close()
-        self._depth_writer.close()
-        logger.info("Parquet writers closed.")
+        """Flush all buffers and close Parquet file handles if storage is enabled."""
+        if self._trade_writer is not None:
+            self._trade_writer.close()
+        if self._depth_writer is not None:
+            self._depth_writer.close()
 
     async def close_async(self) -> None:
-        """Flush Postgres buffer and close pool. Call this on graceful shutdown."""
+        """Flush Postgres buffer and close pool if storage is enabled."""
         self.close()
-        await self._pg_writer.close()
+        if self._pg_writer is not None:
+            await self._pg_writer.close()
         logger.info("Collector fully closed (Parquet + PostgreSQL).")
 
 
@@ -350,36 +355,37 @@ class Collector:
         # synced.  Diff updates alone cannot reconstruct the initial book in a
         # later offline analysis, which made quote-distance calibration depend
         # on an unknown starting state.
-        if self.depth_mgr.sync_generation > self._written_snapshot_generation:
+        if self._depth_writer is not None and self.depth_mgr.sync_generation > self._written_snapshot_generation:
             self._write_depth_snapshot(event)
             self._written_snapshot_generation = self.depth_mgr.sync_generation
 
-        # ── Step 3: write to Parquet ──────────────────────────────────────────
-        event_time = int(event["E"])
-        symbol     = str(event["s"])
-        first_uid  = int(event["U"])
-        final_uid  = int(event["u"])
+        # ── Step 3: write to Parquet (if enabled) ─────────────────────────────
+        if self._depth_writer is not None:
+            event_time = int(event["E"])
+            symbol     = str(event["s"])
+            first_uid  = int(event["U"])
+            final_uid  = int(event["u"])
 
-        for price_s, qty_s in event.get("b", []):
-            self._depth_writer.write({
-                "event_time":      event_time,
-                "symbol":          symbol,
-                "side":            "bid",
-                "price":           float(price_s),
-                "qty":             float(qty_s),
-                "first_update_id": first_uid,
-                "final_update_id": final_uid,
-            })
-        for price_s, qty_s in event.get("a", []):
-            self._depth_writer.write({
-                "event_time":      event_time,
-                "symbol":          symbol,
-                "side":            "ask",
-                "price":           float(price_s),
-                "qty":             float(qty_s),
-                "first_update_id": first_uid,
-                "final_update_id": final_uid,
-            })
+            for price_s, qty_s in event.get("b", []):
+                self._depth_writer.write({
+                    "event_time":      event_time,
+                    "symbol":          symbol,
+                    "side":            "bid",
+                    "price":           float(price_s),
+                    "qty":             float(qty_s),
+                    "first_update_id": first_uid,
+                    "final_update_id": final_uid,
+                })
+            for price_s, qty_s in event.get("a", []):
+                self._depth_writer.write({
+                    "event_time":      event_time,
+                    "symbol":          symbol,
+                    "side":            "ask",
+                    "price":           float(price_s),
+                    "qty":             float(qty_s),
+                    "first_update_id": first_uid,
+                    "final_update_id": final_uid,
+                })
 
         # ── Step 4: update C++ engine ─────────────────────────────────────────
         if self.engine_mirror is not None:
@@ -394,6 +400,8 @@ class Collector:
 
     def _write_depth_snapshot(self, event: dict) -> None:
         """Write the complete, already-synced local book as a Parquet baseline."""
+        if self._depth_writer is None:
+            return
         event_time = int(event["E"])
         first_uid = int(event["U"])
         final_uid = int(event["u"])
@@ -422,8 +430,10 @@ class Collector:
         3.  Fire on_trade callbacks.
         """
         tick = parse_trade_event(event)
-        self._trade_writer.write(tick.to_dict())
-        self._pg_writer.write(tick)
+        if self._trade_writer is not None:
+            self._trade_writer.write(tick.to_dict())
+        if self._pg_writer is not None:
+            self._pg_writer.write(tick)
         for cb in self._trade_cbs:
             try:
                 cb(tick)
@@ -435,13 +445,15 @@ class Collector:
     async def _heartbeat(self) -> None:
         """
         Every heartbeat_s seconds:
-          1. Force-flush both Parquet writers (so files are always readable).
+          1. Force-flush both Parquet writers (if storage enabled).
           2. Log live book state (bid/ask/spread/levels) at INFO level.
         """
         while True:
             await asyncio.sleep(self._heartbeat_s)
-            self._trade_writer.flush_now()
-            self._depth_writer.flush_now()
+            if self._trade_writer is not None:
+                self._trade_writer.flush_now()
+            if self._depth_writer is not None:
+                self._depth_writer.flush_now()
 
             book = self.depth_mgr.book
             bb = book.best_bid()

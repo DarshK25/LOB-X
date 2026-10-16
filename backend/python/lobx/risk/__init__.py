@@ -69,9 +69,19 @@ class MarketMakingRiskConfig:
     max_position: float = 0.005
     max_order_qty: float = 0.001
     max_drawdown: float = 25.0
+    max_notional: float = 500.0
+    max_open_orders: int = 2
+    stale_data_timeout_ms: int = 5_000
 
     def __post_init__(self) -> None:
-        if self.max_position <= 0 or self.max_order_qty <= 0 or self.max_drawdown <= 0:
+        if (
+            self.max_position <= 0
+            or self.max_order_qty <= 0
+            or self.max_drawdown <= 0
+            or self.max_notional <= 0
+            or self.max_open_orders <= 0
+            or self.stale_data_timeout_ms < 0
+        ):
             raise ValueError("all risk limits must be positive")
 
 
@@ -83,6 +93,7 @@ class MarketMakingRiskManager:
         self._drawdown = DrawdownMonitor()
         self._halted = False
         self._halt_reason: str | None = None
+        self.events: list[dict] = []
 
     @property
     def halted(self) -> bool:
@@ -105,21 +116,74 @@ class MarketMakingRiskManager:
             self._halted = True
             self._halt_reason = "max_drawdown"
 
-    def apply_quotes(self, quotes: QuotePair, position: float) -> QuotePair:
+    def apply_quotes(
+        self,
+        quotes: QuotePair,
+        position: float,
+        *,
+        timestamp: int | None = None,
+        market_mid: float | None = None,
+        open_orders: int = 0,
+        last_data_timestamp: int | None = None,
+    ) -> QuotePair:
         """Remove quotes that would increase risk beyond a hard limit."""
+        def block(side: str, reason: str, qty: float, price: float | None) -> None:
+            allowed = max(self.config.max_position - abs(position), 0.0)
+            self.events.append({
+                "event_type": "RISK_BLOCK",
+                "timestamp": timestamp,
+                "side": side,
+                "qty": qty,
+                "price": price,
+                "current_inventory": position,
+                "allowed": allowed,
+                "limit": self.config.max_position,
+                "reason": reason,
+            })
+
         if self._halted:
+            if quotes.bid is not None:
+                block("bid", "MAX_DRAWDOWN", quotes.bid.qty, quotes.bid.price)
+            if quotes.ask is not None:
+                block("ask", "MAX_DRAWDOWN", quotes.ask.qty, quotes.ask.price)
+            return QuotePair(bid=None, ask=None)
+
+        if (
+            last_data_timestamp is not None
+            and timestamp is not None
+            and timestamp - last_data_timestamp > self.config.stale_data_timeout_ms
+        ):
+            if quotes.bid is not None:
+                block("bid", "STALE_DATA_TIMEOUT", quotes.bid.qty, quotes.bid.price)
+            if quotes.ask is not None:
+                block("ask", "STALE_DATA_TIMEOUT", quotes.ask.qty, quotes.ask.price)
             return QuotePair(bid=None, ask=None)
 
         bid = quotes.bid
         ask = quotes.ask
-        if bid is not None and (
-            bid.qty > self.config.max_order_qty
-            or position + bid.qty > self.config.max_position
-        ):
+        if bid is not None and bid.qty > self.config.max_order_qty:
+            block("bid", "MAX_ORDER", bid.qty, bid.price)
             bid = None
-        if ask is not None and (
-            ask.qty > self.config.max_order_qty
-            or position - ask.qty < -self.config.max_position
-        ):
+        elif bid is not None and position + bid.qty > self.config.max_position:
+            block("bid", "MAX_POSITION", bid.qty, bid.price)
+            bid = None
+        elif bid is not None and bid.price * bid.qty > self.config.max_notional:
+            block("bid", "MAX_NOTIONAL", bid.qty, bid.price)
+            bid = None
+        if ask is not None and ask.qty > self.config.max_order_qty:
+            block("ask", "MAX_ORDER", ask.qty, ask.price)
             ask = None
+        elif ask is not None and position - ask.qty < -self.config.max_position:
+            block("ask", "MAX_POSITION", ask.qty, ask.price)
+            ask = None
+        elif ask is not None and ask.price * ask.qty > self.config.max_notional:
+            block("ask", "MAX_NOTIONAL", ask.qty, ask.price)
+            ask = None
+        if open_orders >= self.config.max_open_orders:
+            if bid is not None:
+                block("bid", "MAX_OPEN_ORDERS", bid.qty, bid.price)
+                bid = None
+            if ask is not None:
+                block("ask", "MAX_OPEN_ORDERS", ask.qty, ask.price)
+                ask = None
         return QuotePair(bid=bid, ask=ask)

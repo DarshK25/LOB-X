@@ -7,7 +7,6 @@ import lobx_cpp
 
 from lobx.api.schemas import (
     OrderRequest, TradeResponse, BookSnapshot,
-    CancelRequest, SimulationConfig,
 )
 
 router = APIRouter()

@@ -30,10 +30,12 @@ from lobx.strategy.base import MarketState, Strategy
 from lobx.execution.shadow_engine import ExecutionAssumptions, ShadowQuoteEngine
 from lobx.analytics.volatility import EWMAVolatilityEstimator
 from lobx.risk import MarketMakingRiskConfig, MarketMakingRiskManager
+from lobx.analytics.pnl_waterfall import summarize_pnl_waterfall
 
 if TYPE_CHECKING:
     from lobx.market_data.collector import Collector
     from lobx.market_data.trade_stream import TradeTick
+    from lobx.terminal.telemetry import TelemetryCollector
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +58,14 @@ class StrategyRunner:
         strategy: Strategy,
         execution_assumptions: ExecutionAssumptions | None = None,
         risk_config: MarketMakingRiskConfig | None = None,
+        telemetry: "TelemetryCollector | None" = None,
     ) -> None:
         self.collector     = collector
         self.strategy      = strategy
         self.shadow_engine = ShadowQuoteEngine(assumptions=execution_assumptions or ExecutionAssumptions())
         self.risk_manager  = MarketMakingRiskManager(risk_config)
         self.vol_estimator = EWMAVolatilityEstimator(decay=0.98)
+        self.telemetry     = telemetry
 
         self._tick_count  = 0
         self._last_mid: float | None = None
@@ -109,22 +113,27 @@ class StrategyRunner:
         bid_p, bid_q = bid_info
         ask_p, ask_q = ask_info
         mid = (bid_p + ask_p) / 2.0
+        self.shadow_engine.update_market_context(
+            timestamp=int(event.get("E", 0)),
+            mid=mid,
+            best_bid=bid_p,
+            best_ask=ask_p,
+        )
 
         # Feed EWMA estimator.
         vol = self.vol_estimator.update(mid)
         self._last_mid = mid
 
         # Build frozen state snapshot.
-        state = MarketState(
+        state = MarketState.from_book(
             timestamp=int(event.get("E", 0)),
-            mid_price=mid,
             best_bid=bid_p,
             best_bid_qty=bid_q,
             best_ask=ask_p,
             best_ask_qty=ask_q,
-            spread=round(ask_p - bid_p, 8),
             volatility=vol,
             inventory=self.shadow_engine.inventory.position,
+            log_return=self.vol_estimator.last_log_return,
         )
 
         # Risk is updated before submitting a new quote. It is deliberately
@@ -141,11 +150,42 @@ class StrategyRunner:
         # Apply hard limits, then pass displayed L2 quantity to the optional
         # queue-ahead approximation. The public feed is L2, so this is a
         # conservative scenario tool rather than true queue reconstruction.
-        quotes = self.risk_manager.apply_quotes(quotes, self.shadow_engine.inventory.position)
+        risk_events_before = len(self.risk_manager.events)
+        quotes = self.risk_manager.apply_quotes(
+            quotes,
+            self.shadow_engine.inventory.position,
+            timestamp=state.timestamp,
+            market_mid=mid,
+            # update_quotes() cancel-replaces the current pair, so the
+            # projected open-order count is the proposed pair, not old orders.
+            open_orders=0,
+        )
+        for risk_event in self.risk_manager.events[risk_events_before:]:
+            self.shadow_engine.emit_event(risk_event)
+        self.shadow_engine.record_quote_decision(
+            strategy=self.strategy.name(),
+            state=state,
+            quotes=quotes,
+            details=getattr(self.strategy, "last_quote_audit", {}),
+        )
         book = self.collector.depth_mgr.book
         bid_ahead = book.bids.get(quotes.bid.price, 0.0) if quotes.bid else 0.0
         ask_ahead = book.asks.get(quotes.ask.price, 0.0) if quotes.ask else 0.0
         self.shadow_engine.update_quotes(quotes, state.timestamp, bid_ahead, ask_ahead)
+
+        if self.telemetry is not None:
+            from lobx.terminal.bridge import publish_tick
+            publish_tick(
+                self.telemetry,
+                state=state,
+                strategy_name=self.strategy.name(),
+                quotes=quotes,
+                audit=getattr(self.strategy, "last_quote_audit", {}),
+                engine=self.shadow_engine,
+                mark_price=mid,
+                bids=self._top_depth(book.bids, reverse=True),
+                asks=self._top_depth(book.asks, reverse=False),
+            )
 
         # Periodic status log.
         self._tick_count += 1
@@ -154,19 +194,46 @@ class StrategyRunner:
             pos   = self.shadow_engine.inventory.position
             rpnl  = self.shadow_engine.inventory.realized_pnl
             upnl  = self.shadow_engine.inventory.unrealized_pnl(mid)
-            bid_s = f"{quotes.bid.price:.2f}" if quotes.bid else "—"
-            ask_s = f"{quotes.ask.price:.2f}" if quotes.ask else "—"
+            latest_blocks = [
+                event for event in self.shadow_engine.events
+                if event.get("event_type") == "RISK_BLOCK"
+            ]
+            block_reason = latest_blocks[-1]["reason"] if latest_blocks else None
+            bid_s = f"{quotes.bid.price:.2f}" if quotes.bid else f"BLOCKED[{block_reason}]"
+            ask_s = f"{quotes.ask.price:.2f}" if quotes.ask else f"BLOCKED[{block_reason}]"
             logger.info(
                 "[%s tick=%d]  mid=%.2f  vol=%.6f  "
-                "quote: bid=%s ask=%s  |  "
+                "quote: BID=%s  ASK=%s  |  "
                 "pos=%.6f  fills=%d  rPnL=%.4f  uPnL=%.4f",
                 self.strategy.name(), self._tick_count, mid, vol,
                 bid_s, ask_s, pos, fills, rpnl, upnl,
             )
 
+    @staticmethod
+    def _top_depth(levels, *, reverse: bool, n: int = 10) -> list[tuple[float, float]]:
+        """Top-N (price, qty) levels, best price first.
+
+        ``levels`` is a price->qty mapping sorted ascending by price (SortedDict).
+        Bids want the highest prices first (reverse=True); asks the lowest.
+        """
+        try:
+            items = list(levels.items())
+        except AttributeError:
+            return []
+        ordered = list(reversed(items)) if reverse else items
+        return [(float(p), float(q)) for p, q in ordered[:n]]
+
     def _on_trade(self, trade: "TradeTick") -> None:
         """Called by Collector after every parsed trade tick."""
         self.shadow_engine.on_trade(trade)
+        if self.telemetry is not None and self._last_mid is not None:
+            from lobx.terminal.bridge import publish_execution
+            publish_execution(
+                self.telemetry,
+                engine=self.shadow_engine,
+                mark_price=self._last_mid,
+                timestamp=trade.event_time,
+            )
 
     # ── Session summary ───────────────────────────────────────────────────────
 
@@ -174,7 +241,7 @@ class StrategyRunner:
         """Return a dict summary of the session for printing at shutdown."""
         inv  = self.shadow_engine.inventory
         mid  = self._last_mid or 0.0
-        return {
+        summary = {
             "strategy":      self.strategy.name(),
             "ticks":         self._tick_count,
             "fills":         self.shadow_engine.fill_count,
@@ -184,6 +251,21 @@ class StrategyRunner:
             "unrealized_pnl":inv.unrealized_pnl(mid),
             "fees_paid":     self.shadow_engine.fees_paid,
             "total_pnl":     self.shadow_engine.net_pnl(mid),
+            "max_inventory": inv.max_inventory,
+            "average_inventory": inv.average_inventory,
+            "inventory_variance": inv.inventory_variance,
+            "inventory_half_life_ms": inv.inventory_half_life_ms,
+            "time_spent_long_ms": inv.time_spent_long_ms,
+            "time_spent_short_ms": inv.time_spent_short_ms,
+            "inventory_distribution": inv.inventory_distribution,
             "risk_halted":   self.risk_manager.halted,
             "risk_halt_reason": self.risk_manager.halt_reason,
         }
+        summary.update(summarize_pnl_waterfall(
+            self.shadow_engine.fills,
+            [],
+            realized_pnl=inv.realized_pnl,
+            unrealized_pnl=inv.unrealized_pnl(mid),
+            fees=self.shadow_engine.fees_paid,
+        ))
+        return summary
