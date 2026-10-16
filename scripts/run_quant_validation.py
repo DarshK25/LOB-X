@@ -176,7 +176,7 @@ def main():
 ## 1. Executive Summary
 - **Dataset**: `{parquet_path.name}` ({total_trades:,} trades)
 - **Train/Test Split**: 70% Train ({len(df_train):,} trades) / 30% Out-Of-Sample Test ({len(df_test):,} trades)
-- **Order-Flow Intensity $\kappa$**: ${args.kappa:.4f}$ $\\text{{USD}}^{{-1}}$
+- **Order-Flow Intensity $\\kappa$**: $ $\\\\text{{USD}}^{{-1}}$
 
 ## 2. Out-Of-Sample Scoreboard (Test Set)
 | Strategy | Fills | Gross PnL | Fees Paid | Net PnL | Max Drawdown |
