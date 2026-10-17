@@ -13,31 +13,25 @@ Provides:
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
-import math
-import os
+import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 # Path configuration to find local lobx package
 _BACKEND = Path(__file__).resolve().parents[1] / "backend" / "python"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from lobx.market_data.collector import Collector
-from lobx.market_data.trade_stream import TradeTick
-from lobx.analytics.volatility import EWMAVolatilityEstimator
-from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
-from lobx.strategy.base import MarketState
+from lobx.backtest.replay import BacktestConfig, HistoricalReplay
 from lobx.execution.shadow_engine import ExecutionAssumptions
 from lobx.live.quote_loop import StrategyRunner
-from lobx.terminal.telemetry import TelemetryCollector
-from lobx.backtest.replay import BacktestConfig, HistoricalReplay
+from lobx.market_data.collector import Collector
+from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
+from lobx.strategy.base import MarketState
+from lobx.terminal.dashboard import LiveDashboard
 
 # Suppress logging to make terminal UI clean
 logging.getLogger("lobx").setLevel(logging.ERROR)
@@ -45,8 +39,7 @@ logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("websockets").setLevel(logging.ERROR)
 
 try:
-    from rich.align import Align
-    from rich.console import Console, Group
+    from rich.console import Console
     from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
@@ -72,488 +65,6 @@ LOGO = """
 [bold white]Limit Order Book Exchange[/bold white]
 [dim]High-Frequency Trading Matching Engine & Simulator CLI[/dim]
 """
-# ── Adaptive Terminal Price & Candle Chart ──────────────────────────────────────
-class AdaptiveTerminalChart:
-    """
-    Auto-scaling terminal price chart supporting both Candlestick and Continuous Line
-    modes, with configurable timeframes (1s, 5s, 15s, 1m).
-    """
-
-    def __init__(self, height: int = 10, bucket_s: int = 5, mode: str = "candle") -> None:
-        self.height = height
-        self.bucket_s = bucket_s
-        self.mode = mode  # "candle" or "line"
-        # Each candle: [open, high, low, close, bucket_id]
-        self._candles: list[list[float]] = []
-        self._current_bucket: int = -1
-
-    def add_trade(self, price: float, qty: float, is_buy: bool) -> None:
-        """Accumulate a trade tick into the active bucket."""
-        bucket = int(time.time()) // self.bucket_s
-
-        if not self._candles or bucket != self._current_bucket:
-            self._candles.append([price, price, price, price, float(bucket)])
-            self._current_bucket = bucket
-            if len(self._candles) > 200:
-                self._candles.pop(0)
-        else:
-            c = self._candles[-1]
-            c[1] = max(c[1], price)  # High
-            c[2] = min(c[2], price)  # Low
-            c[3] = price             # Close
-
-    def render(self, max_cols: int = 40) -> Text:
-        """Render the chart in either Line or Candlestick mode with calibrated Y-axis."""
-        if not self._candles:
-            t = Text(justify="center")
-            t.append("\n  Waiting for live trades…", style="dim cyan")
-            return t
-
-        if self.mode == "line":
-            return self._render_line(max_cols)
-        return self._render_candle(max_cols)
-
-    def _render_line(self, max_cols: int) -> Text:
-        """Render a smooth continuous line graph with calibrated Y-axis."""
-        Y_W = 10
-        n_pts = max(4, max_cols - Y_W - 1)
-        visible = self._candles[-n_pts:]
-        closes = [c[3] for c in visible]
-        N = len(closes)
-        H = self.height
-
-        mn, mx = min(closes), max(closes)
-        span = mx - mn or 1.0
-
-        # Step calculation for clean Y-axis numbers
-        step = 1.0
-        for s in (0.1, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500):
-            if span / s <= H:
-                step = s
-                break
-
-        pad = span * 0.10
-        p_hi = mx + pad
-        p_lo = mn - pad
-        p_span = p_hi - p_lo
-
-        import math as _math
-        base = _math.floor(p_lo / step) * step
-        label_prices = []
-        p = base
-        while p <= p_hi + step:
-            if p_lo <= p <= p_hi:
-                label_prices.append(p)
-            p += step
-        label_prices = sorted(set([p_hi, p_lo] + label_prices))
-
-        def _row(price: float) -> int:
-            frac = (p_hi - price) / p_span
-            return max(0, min(H - 1, round(frac * (H - 1))))
-
-        label_rows: dict[int, float] = {}
-        for lp in label_prices:
-            label_rows[_row(lp)] = lp
-
-        total_sublevels = H * 4
-        blocks = [" ", " ", "▄", "▀", "█"]
-        grid = [[" " for _ in range(N)] for _ in range(H)]
-        color_grid = [["dim cyan" for _ in range(N)] for _ in range(H)]
-
-        for c, val in enumerate(closes):
-            frac = (val - p_lo) / p_span
-            sub = int(frac * (total_sublevels - 1))
-            r_idx = H - 1 - (sub // 4)
-            r_idx = max(0, min(H - 1, r_idx))
-            ch = blocks[(sub % 4) + 1]
-            grid[r_idx][c] = ch
-
-            if c > 0:
-                is_up = val >= closes[c - 1]
-                color_grid[r_idx][c] = "bold green" if is_up else "bold red"
-
-        out = Text()
-        for r in range(H):
-            if r in label_rows:
-                out.append(f"{label_rows[r]:>8,.2f} ", style="dim white")
-                out.append("▏", style="dim")
-            else:
-                out.append(" " * Y_W + "▏", style="dim")
-
-            for c in range(N):
-                out.append(grid[r][c], style=color_grid[r][c])
-            out.append("\n")
-
-        out.append(" " * Y_W + "└" + "─" * N + "\n", style="dim")
-        latest = closes[-1]
-        out.append(f"  Line Chart ({self.bucket_s}s tf) │ Latest: ${latest:,.2f}", style="dim cyan")
-        return out
-
-    def _render_candle(self, max_cols: int) -> Text:
-        """Render a Bloomberg-style candlestick chart."""
-        Y_W = 10
-        n_candles = max(4, (max_cols - Y_W - 1) // 2)
-        visible = self._candles[-n_candles:]
-        N = len(visible)
-        H = self.height
-
-        highs  = [c[1] for c in visible]
-        lows   = [c[2] for c in visible]
-        raw_hi = max(highs)
-        raw_lo = min(lows)
-        span   = raw_hi - raw_lo or 1.0
-
-        for step in (0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500):
-            if span / step <= H:
-                break
-
-        pad   = span * 0.12
-        p_hi  = raw_hi + pad
-        p_lo  = raw_lo - pad
-        p_span = p_hi - p_lo
-
-        import math as _math
-        base = _math.floor(p_lo / step) * step
-        label_prices = []
-        p = base
-        while p <= p_hi + step:
-            if p_lo <= p <= p_hi:
-                label_prices.append(p)
-            p += step
-        label_prices = sorted(set([p_hi, p_lo] + label_prices))
-
-        def _row(price: float) -> int:
-            frac = (p_hi - price) / p_span
-            return max(0, min(H - 1, round(frac * (H - 1))))
-
-        label_rows: dict[int, float] = {}
-        for lp in label_prices:
-            label_rows[_row(lp)] = lp
-
-        EMPTY = (" ", "")
-        grid: list[list[tuple[str, str]]] = [[EMPTY] * N for _ in range(H)]
-
-        for col, (o, h, l, c, _) in enumerate(visible):
-            is_up    = c >= o
-            body_sty = "bold green" if is_up else "bold red"
-            wick_sty = "green"      if is_up else "red"
-
-            r_hi  = _row(h)
-            r_lo  = _row(l)
-            r_top = _row(max(o, c))
-            r_bot = _row(min(o, c))
-
-            for r in range(H):
-                if r < r_hi or r > r_lo:
-                    continue
-                if r_top <= r <= r_bot:
-                    grid[r][col] = ("█", body_sty)
-                else:
-                    grid[r][col] = ("│", wick_sty)
-
-        out = Text()
-        for r in range(H):
-            if r in label_rows:
-                out.append(f"{label_rows[r]:>8,.2f} ", style="dim white")
-                out.append("▏", style="dim")
-            else:
-                out.append(" " * Y_W + "▏", style="dim")
-
-            for col in range(N):
-                ch, sty = grid[r][col]
-                out.append(ch, style=sty)
-                out.append(" ", style="")
-
-            out.append("\n")
-
-        out.append(" " * Y_W + "└" + "─" * (N * 2) + "\n", style="dim")
-        o5, h5, l5, c5 = visible[-1][0], visible[-1][1], visible[-1][2], visible[-1][3]
-        out.append(
-            f"  O:{o5:,.2f} H:{h5:,.2f} L:{l5:,.2f} C:{c5:,.2f} ({self.bucket_s}s candle)",
-            style="dim cyan"
-        )
-        return out
-
-
-
-
-# ── Live Visual Terminal ──────────────────────────────────────────────────────
-class LiveDashboard:
-    """
-    Full-screen real-time terminal dashboard running 100% in-memory without
-    database or storage overhead.
-    """
-
-    def __init__(self, symbol: str, bucket_s: int = 5, mode: str = "candle") -> None:
-        self.symbol = symbol.upper()
-        self.bucket_s = bucket_s
-        self.mode = mode
-        self.start_time = time.time()
-        self.trades_processed = 0
-        self.total_volume = 0.0
-        self.depth_events = 0
-        self.taker_buy_vol = 0.0
-
-        self.recent_trades: list[TradeTick] = []
-        self.chart = AdaptiveTerminalChart(height=9, bucket_s=bucket_s, mode=mode)
-
-        # Pure in-memory streaming: enable_storage=False eliminates all DB/Parquet overhead
-        self.collector = Collector(
-            symbol=self.symbol,
-            enable_engine_mirror=False,
-            enable_storage=False,
-            heartbeat_s=10,
-        )
-
-        self.collector.on_book_update(self._on_book_update)
-        self.collector.on_trade(self._on_trade)
-
-    def _on_book_update(self, event: dict) -> None:
-        self.depth_events += 1
-
-    def _on_trade(self, tick: TradeTick) -> None:
-        self.trades_processed += 1
-        self.total_volume += tick.qty
-        if not tick.is_buyer_maker:
-            self.taker_buy_vol += tick.qty
-        self.recent_trades.append(tick)
-        if len(self.recent_trades) > 10:
-            self.recent_trades.pop(0)
-
-        self.chart.add_trade(tick.price, tick.qty, not tick.is_buyer_maker)
-
-    def generate_layout(self) -> Layout:
-        term_width = CONSOLE.width or 80
-
-        layout = Layout()
-        layout.split(
-            Layout(name="header", size=3),
-            Layout(name="main", ratio=1),
-            Layout(name="footer", size=3)
-        )
-
-        layout["main"].split_row(
-            Layout(name="left", ratio=1),
-            Layout(name="right", ratio=1)
-        )
-
-        layout["right"].split(
-            Layout(name="chart", ratio=1),
-            Layout(name="trades", size=10)
-        )
-
-        # ── 1. Header ─────────────────────────────────────────────────────────
-        uptime = int(time.time() - self.start_time)
-        hrs, mins, secs = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-
-        ws_stat = self.collector.ws_status
-        is_synced = self.collector.depth_mgr.is_synced
-        is_syncing = self.collector.depth_mgr._state.syncing
-
-        if is_synced:
-            ws_pill = Text("● Live", style="bold green")
-        elif ws_stat == "Connected" and is_syncing:
-            ws_pill = Text("◑ Syncing book…", style="bold yellow")
-        elif ws_stat in ("Connecting...", "Initializing..."):
-            ws_pill = Text("◌ Connecting…", style="bold cyan")
-        else:
-            ws_pill = Text("✗ Reconnecting…", style="bold red")
-
-        header_text = Text()
-        header_text.append("LOB-X Terminal  │  ", style="bold green")
-        header_text.append(f"{self.symbol}  │  ", style="bold white")
-        header_text.append(f"{hrs:02d}:{mins:02d}:{secs:02d}  │  ", style="dim")
-        header_text.append("Feed: ", style="dim")
-        header_text.append_text(ws_pill)
-
-        layout["header"].update(Panel(Align.center(header_text), border_style="green"))
-
-        # ── 2. Order Book (Left Panel) ────────────────────────────────────────
-        book = self.collector.depth_mgr.book
-        bb = book.best_bid()
-        ba = book.best_ask()
-
-        mid_price = None
-        micro_price = None
-        spread = None
-
-        if bb is not None and ba is not None and is_synced:
-            book_table = Table(title="Live Order Book L2", show_header=True, expand=True, box=None)
-            book_table.add_column("Side",      justify="center", width=5)
-            book_table.add_column("Price ($)", justify="right")
-            book_table.add_column("Size",      justify="right", width=8)
-            book_table.add_column("Cumul.BTC", justify="right", width=8)
-            book_table.add_column("Liq. Bar",  justify="left",  width=8)
-
-            asks_view = list(book.asks.items())[:8]    # best→worst (ascending)
-            bids_view = list(book.bids.items())[-8:]   # worst→best (ascending), best = last
-
-            # ── Cumulative depth: running sum from mid outward ─────────────────
-            # Asks: cumul from best ask (index 0) going up
-            ask_cum: list[float] = []
-            running = 0.0
-            for _, qty in asks_view:
-                running += qty
-                ask_cum.append(running)
-
-            # Bids: cumul from best bid (last item) going down
-            bid_cum: list[float] = []
-            running = 0.0
-            for _, qty in reversed(bids_view):
-                running += qty
-                bid_cum.append(running)
-            bid_cum.reverse()  # now index 0 = worst bid (deepest), -1 = best bid
-
-            max_cum = max((ask_cum[-1] if ask_cum else 1.0), (bid_cum[0] if bid_cum else 1.0))
-
-            # Compute quantitative microprice
-            bid_p, bid_q = bb
-            ask_p, ask_q = ba
-            spread    = ask_p - bid_p
-            mid_price = (ask_p + bid_p) / 2.0
-            total_q   = bid_q + ask_q
-            micro_price = (bid_q * ask_p + ask_q * bid_p) / total_q if total_q > 0 else mid_price
-
-            # ── Display asks (worst → best, so highest price at top of screen) ──
-            for i, (price, qty) in enumerate(reversed(asks_view)):
-                # When reversed, index i=0 → asks_view[-1] (worst ask, highest price)
-                cum = ask_cum[len(asks_view) - 1 - i]
-                bar_len = max(1, round(cum / max_cum * 7))
-                bar = "▓" * bar_len
-                book_table.add_row(
-                    "[red]ASK[/red]",
-                    f"{price:,.2f}",
-                    f"{qty:.4f}",
-                    f"[red]{cum:.3f}[/red]",
-                    f"[red]{bar}[/red]",
-                )
-
-            # ── Spread row ────────────────────────────────────────────────────
-            book_table.add_row(
-                "──", f"Spread: {spread:.2f}", "──────", "────────", "────────",
-                style="dim"
-            )
-
-            # ── Display bids (best → worst, so highest price at top of bid section) ──
-            for i, (price, qty) in enumerate(reversed(bids_view)):
-                # reversed(bids_view): index 0 = bids_view[-1] = best bid
-                # bid_cum is indexed 0=worst, -1=best  → we need bid_cum[len-1-i]
-                cum = bid_cum[len(bids_view) - 1 - i]
-                bar_len = max(1, round(cum / max_cum * 7))
-                bar = "▓" * bar_len
-                book_table.add_row(
-                    "[green]BID[/green]",
-                    f"{price:,.2f}",
-                    f"{qty:.4f}",
-                    f"[green]{cum:.3f}[/green]",
-                    f"[green]{bar}[/green]",
-                )
-
-            layout["left"].update(Panel(book_table, border_style="cyan", title="Order Book L2  │  Cumul.BTC = running depth from mid"))
-
-        else:
-            # Book not yet synced — show status. Trades + chart still render normally below.
-            status_txt = Text(justify="center")
-            if ws_stat in ("Initializing...", "Connecting..."):
-                status_txt.append("◌  Connecting to Binance…\n", style="bold cyan")
-                status_txt.append("Initiating WebSocket streams…", style="dim")
-            elif ws_stat == "Connected":
-                status_txt.append("◑  Fetching L2 snapshot…\n", style="bold yellow")
-                status_txt.append(f"Buffering depth events…  trades: {self.trades_processed}", style="yellow")
-            else:
-                status_txt.append("✗  Reconnecting…\n", style="bold red")
-                status_txt.append("Auto-reconnecting endpoints…", style="dim")
-
-            layout["left"].update(Panel(Align.center(status_txt, vertical="middle"), border_style="cyan", title="Order Book Depth"))
-
-        # ── 3. Chart Panel — always render (trades flow before book sync) ─────
-        avail_cols = max(12, (term_width // 2) - 15)
-        chart_title = "Price Candles (5s)" if self.trades_processed > 0 else "Price Candles (5s) — waiting…"
-        layout["chart"].update(Panel(self.chart.render(max_cols=avail_cols), border_style="magenta", title=chart_title))
-
-        # ── 4. Trades Panel — always render ───────────────────────────────────
-        trades_table = Table(show_header=True, expand=True, box=None)
-        trades_table.add_column("Time", justify="center", width=8)
-        trades_table.add_column("Side", justify="center", width=5)
-        trades_table.add_column("Price ($)", justify="right")
-        trades_table.add_column("Size", justify="right")
-
-        for t in reversed(self.recent_trades):
-            time_str = datetime.fromtimestamp(t.event_time / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-            side_color = "red" if t.is_buyer_maker else "green"
-            side_str = "SELL" if t.is_buyer_maker else "BUY"
-            trades_table.add_row(
-                time_str,
-                f"[{side_color}]{side_str}[/{side_color}]",
-                f"{t.price:,.2f}",
-                f"{t.qty:.4f}"
-            )
-
-        layout["trades"].update(Panel(trades_table, border_style="yellow", title="Live Trade Feed"))
-
-        # ── 5. Footer Stats ───────────────────────────────────────────────────
-        # Show live trade price even before book sync
-        live_price = self.recent_trades[-1].price if self.recent_trades else None
-        mid_str = f"${mid_price:,.2f}" if mid_price else (f"${live_price:,.2f} (live)" if live_price else "—")
-        micro_str = f"${micro_price:,.2f}" if micro_price else "—"
-        spread_str = f"${spread:.2f}" if spread else "—"
-        buy_pct = (self.taker_buy_vol / self.total_volume * 100) if self.total_volume > 0 else 50.0
-
-        footer_text = Text()
-        footer_text.append(f"Price: {mid_str}  │  ", style="bold white")
-        footer_text.append(f"Micro: {micro_str}  │  ", style="bold cyan")
-        footer_text.append(f"Spread: {spread_str}  │  ", style="bold yellow")
-        footer_text.append(f"Vol: {self.total_volume:.2f} BTC (Buy {buy_pct:.0f}%)  │  ", style="bold green")
-        footer_text.append(f"Trades: {self.trades_processed:,}  │  ", style="dim")
-        footer_text.append("Ctrl+C to exit", style="dim yellow")
-
-        layout["footer"].update(Panel(Align.center(footer_text), border_style="blue"))
-        return layout
-
-    async def run(self) -> None:
-        """Run the live dashboard loop."""
-        self._run_error: str | None = None
-        ws_task = asyncio.create_task(self.collector.run())
-        await asyncio.sleep(0)
-
-        # Use screen=False (standard scroll) instead of screen=True (alternate buffer).
-        # screen=True uses \033[?1049h which silently fails or raises KeyboardInterrupt
-        # on some Windows terminal configurations (pwsh in certain console modes).
-        try:
-            with Live(
-                self.generate_layout(),
-                console=CONSOLE,
-                screen=False,
-                auto_refresh=False,
-                vertical_overflow="visible",
-            ) as live:
-                while True:
-                    await asyncio.sleep(0.25)
-                    if ws_task.done() and not ws_task.cancelled():
-                        try:
-                            ws_task.result()
-                        except Exception as exc:
-                            self._run_error = str(exc)
-                            break
-                    try:
-                        live.update(self.generate_layout(), refresh=True)
-                    except Exception as render_exc:
-                        # Log render errors but keep the loop alive
-                        self._run_error = f"render: {render_exc}"
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
-        except Exception as exc:
-            self._run_error = str(exc)
-        finally:
-            self.collector.stop()
-            ws_task.cancel()
-            try:
-                await ws_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            await self.collector.close_async()
-
-
 def _fmt_ms(ms: float | None) -> str:
     if ms is None:
         return "—"
@@ -727,12 +238,24 @@ class LobxCLI:
                 al = a.lower()
                 if al in ("line", "candle"):
                     mode = al
-                elif al.endswith("s") and al[:-1].isdigit():
-                    bucket_s = int(al[:-1])
-                elif al.endswith("m") and al[:-1].isdigit():
-                    bucket_s = int(al[:-1]) * 60
+                elif al.endswith(("s", "m")) and any(ch.isdigit() for ch in al):
+                    match = re.fullmatch(r"([0-9]+)([sm])", al)
+                    if match is None:
+                        CONSOLE.print("[bold red]Invalid timeframe. Use whole positive units, e.g. 1s or 1m.[/bold red]")
+                        return
+                    try:
+                        bucket_s = int(match[1]) * (60 if match[2] == "m" else 1)
+                    except ValueError:
+                        CONSOLE.print("[bold red]Timeframe is too large.[/bold red]")
+                        return
                 elif not al.isdigit():
                     symbol = al.upper()
+                else:
+                    CONSOLE.print("[bold red]Timeframe needs a unit, e.g. 5s or 1m.[/bold red]")
+                    return
+            if bucket_s <= 0:
+                CONSOLE.print("[bold red]Timeframe must be positive, e.g. 1s, 5s, 15s or 1m.[/bold red]")
+                return
             self.cmd_live(symbol, bucket_s, mode)
 
         elif cmd in ("book", "depth", "snapshot"):
@@ -775,7 +298,8 @@ class LobxCLI:
         table.add_column("Command", style="bold yellow")
         table.add_column("Description")
 
-        table.add_row("live [sym] [tf] [mode]", "Open real-time terminal with live L2 book & chart (e.g. 'live BTCUSDT 1s line' or 'live 5s candle').")
+        table.add_row("live [sym] [tf] [mode]", "Live candles + volume, L2 and microstructure. Try 'live BTCUSDT 5s candle' or 'live 1s line'.")
+        table.add_row("collect / watch", "Aliases for live (in-memory only; use run_collector.py to record data).")
         table.add_row("book [symbol]", "Fetch and display an instant snapshot table of top bid/ask levels.")
         table.add_row("as [symbol] [q]", "Calculate Avellaneda-Stoikov reservation price & optimal spread for inventory q.")
         table.add_row("sim [sym] [secs]", "Run the Avellaneda-Stoikov strategy live on Binance data through the execution core, with a live telemetry view.")
@@ -788,7 +312,11 @@ class LobxCLI:
 
     def cmd_live(self, symbol: str, bucket_s: int = 5, mode: str = "candle") -> None:
         CONSOLE.print(f"\n[bold green]Launching Live Market Terminal for {symbol.upper()} ({bucket_s}s timeframe, {mode} mode)…[/bold green]")
-        dashboard = LiveDashboard(symbol, bucket_s=bucket_s, mode=mode)
+        try:
+            dashboard = LiveDashboard(symbol, bucket_s=bucket_s, mode=mode, console=CONSOLE)
+        except ValueError as exc:
+            CONSOLE.print(f"[bold red]Invalid live configuration:[/bold red] {exc}")
+            return
         try:
             asyncio.run(dashboard.run())
         except KeyboardInterrupt:
@@ -859,7 +387,6 @@ class LobxCLI:
             # AS Parameters: gamma (risk aversion), sigma (volatility), T-t (horizon), kappa (order arrival intensity)
             gamma = 0.1
             sigma = mid * 0.0005   # ~0.05% short-term volatility
-            t_rem = 1.0            # 1 normalized trading session
             kappa = 1.5
 
             strategy = AvellanedaStoikovStrategy(
@@ -1076,7 +603,6 @@ class LobxCLI:
                 )
 
                 elapsed = time.time() - start
-                t_rem   = max(0.0, 1.0 - elapsed / duration_s)
 
                 book   = collector.depth_mgr.book
                 bb     = book.best_bid()
@@ -1239,7 +765,7 @@ class LobxCLI:
         table.add_column("Status")
 
         try:
-            import lobx_cpp
+            import lobx_cpp  # noqa: F401 - probe the compiled extension's actual loadability.
             cpp_status = "[bold green]Available (C++ pybind11 matching engine)[/bold green]"
         except ImportError:
             cpp_status = "[yellow]Not Built (Pure Python mode active)[/yellow]"

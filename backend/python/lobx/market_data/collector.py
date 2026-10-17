@@ -271,10 +271,12 @@ class Collector:
         try:
             await asyncio.gather(ws_task, hb_task)
         except asyncio.CancelledError:
-            ws_task.cancel()
-            hb_task.cancel()
+            # Cancelling gather already cancels its children. A second cancel
+            # interrupts the WebSocket context's asynchronous TLS close.
             if db_task and not db_task.done():
                 db_task.cancel()
+            await asyncio.gather(ws_task, hb_task, *([db_task] if db_task else []),
+                                 return_exceptions=True)
             raise
 
     def stop(self) -> None:
