@@ -88,7 +88,8 @@ def suite_from_meta(meta: dict) -> SuiteFactory:
     p = meta["suite"]
     return lambda calib, qty: research.strategy_suite(
         calib, float(meta["tick_size"]), gamma_as=p["gamma_as"], gamma_glft=p["gamma_glft"],
-        maker_fee=p["maker_fee"], qty=qty)
+        maker_fee=p["maker_fee"], qty=qty,
+        alpha_gates=p.get("alpha_gates"))
 
 
 @dataclass

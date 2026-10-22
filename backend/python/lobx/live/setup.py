@@ -64,6 +64,10 @@ def latest_calibration(fee: str = "vip0", results_dir: Path = RESULTS_DIR,
             "_source": path.name,
             "_gamma_as": tuning.get("AS", DEFAULT_GAMMA),
             "_gamma_glft": tuning.get("GLFT", DEFAULT_GAMMA),
+            "_alpha_gates": {
+                "base": tuning.get("alpha_gate", {}).get("base", 0.025),
+                "fee_floor": tuning.get("alpha_gate", {}).get("fee_floor", 0.025),
+            },
         }
     return None
 
@@ -78,7 +82,10 @@ def build_live_sim(symbol: str = "BTCUSDT", fee: str = "spot_vip0", warmup_s: fl
     cfg = ExecutionConfig(tick_size=tick, maker_fee=prof["maker"], taker_fee=prof["taker"])
     tuned = latest_calibration(fee, market=market) or {}
     suite = {"gamma_as": tuned.get("_gamma_as", DEFAULT_GAMMA),
-             "gamma_glft": tuned.get("_gamma_glft", DEFAULT_GAMMA), "maker_fee": prof["maker"]}
+             "gamma_glft": tuned.get("_gamma_glft", DEFAULT_GAMMA),
+             "maker_fee": prof["maker"],
+             "alpha_gates": tuned.get("_alpha_gates",
+                                      {"base": 0.025, "fee_floor": 0.025})}
 
     def build(calib: dict, qty: float):
         return research.strategy_suite(calib, tick, qty=qty, **suite)

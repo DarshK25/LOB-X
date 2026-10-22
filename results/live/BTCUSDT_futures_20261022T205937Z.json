@@ -1,0 +1,32 @@
+{
+  "session_file": "data/sessions/BTCUSDT_futures_20261022T205937Z.jsonl.gz",
+  "session_sha256": "30d28c7fa1be41e4ce1952a84b9ee7f486307e86ef520f41439c5c61e7520817",
+  "venue": "Binance futures",
+  "fee_profile": "mm_rebate",
+  "capital_usd": 10000,
+  "warmup_requested_s": 120,
+  "warmup_result": "first calibration rejected; automatic 180-second retry succeeded",
+  "gamma_source": "calm_2024_03_30_08_00_12_00.json",
+  "alpha_gates": {
+    "base": 0.0,
+    "fee_floor": 0.0
+  },
+  "market_events": 4452,
+  "recorded_fills": 133,
+  "deterministic_replay": {
+    "exact": true,
+    "replayed_fills": 133,
+    "strategies_matched": 11
+  },
+  "paper_results": {
+    "GLFT+Hawkes+FV": {
+      "net_pnl": 0.03727831,
+      "fills": 13
+    },
+    "AdaptiveGLFT alpha-gated": {
+      "net_pnl": 0.0,
+      "fills": 0
+    }
+  },
+  "interpretation": "Short live smoke test only. Exact replay validates event ordering and configuration persistence; it is not sufficient profitability evidence."
+}
