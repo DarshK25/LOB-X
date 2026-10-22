@@ -1,1 +1,1 @@
-"""Quantitative models: Avellaneda-Stoikov quoting and Hawkes trade intensity."""
+"""Quantitative models: Avellaneda-Stoikov, GLFT and Hawkes order-flow intensity."""

@@ -1,4 +1,5 @@
 pytest>=8.0
 pytest-asyncio>=0.23
-duckdb>=1.0
 ruff>=0.5
+# C++ toolchain fallback used by scripts/setup_cpp_build.py when CMake/MSVC are absent
+ziglang>=0.13

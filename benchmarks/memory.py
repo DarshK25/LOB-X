@@ -13,11 +13,13 @@ try:
     def rss_mb() -> float:
         return _proc.memory_info().rss / 1024 / 1024
 except ImportError:
-    def rss_mb() -> float:  # type: ignore[misc]
-        return 0.0
+    rss_mb = None
 
 
 def run(n: int = 500_000) -> None:
+    if rss_mb is None:
+        print("[memory] skipped: pip install psutil")
+        return
     book = lobx_cpp.OrderBook()
     mb0  = rss_mb()
 

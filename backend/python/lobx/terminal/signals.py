@@ -1,10 +1,13 @@
-"""Observed session statistics and uncalibrated activity for one live market.
+"""Observed session statistics and Hawkes order-flow intensity for one live market.
 
-All public timestamps are exchange milliseconds; only the canonical Hawkes
-model receives seconds. No history, quotes, or arrivals are manufactured here.
+All public timestamps are exchange milliseconds. Hawkes intensities come from
+the same ``FeatureEngine`` the strategies use: separate buy and sell
+processes, refitted online by MLE (``refit``) once enough market orders have
+been seen; until then default parameters are used and flagged uncalibrated.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,9 +16,10 @@ from numbers import Integral, Real
 from typing import Literal
 
 from lobx.market_data.trade_stream import TradeTick
-from lobx.models.hawkes.intensity import HawkesIntensity
+from lobx.models.hawkes.intensity import regime
+from lobx.strategy.features import FeatureEngine
 
-HawkesRegime = Literal["QUIET", "ACTIVE", "BURST"]
+HawkesRegime = Literal["QUIET", "NORMAL", "ELEVATED", "BURST"]
 BookSide = Sequence[tuple[float, float]]
 
 
@@ -36,11 +40,12 @@ class LiveSignalsSnapshot:
     volume (multiply by 100 for a percentage). A buy has is_buyer_maker=False.
     ``trade_count`` counts accepted unique trades, including late ones.
 
-    ``hawkes_intensity`` is an UNCALIBRATED events/second estimate using fixed
-    mu=0.5, alpha=0.8, beta=2. ``hawkes_ratio`` divides it by the fixed heuristic
-    background mu=0.5 events/s, NOT an estimated arrival rate or stationary
-    mean. Regimes are heuristic ratio bands: QUIET < 2, ACTIVE [2, 5), BURST >= 5.
-    They are activity labels, not calibrated cascade detection or trading advice.
+    ``hawkes_intensity`` is buy + sell market-order intensity (orders/s).
+    ``hawkes_ratio`` divides it by the model's stationary mean mu / (1 - n),
+    so 1.0 is typical activity. Regimes: QUIET < 0.7, NORMAL < 1.5,
+    ELEVATED < 3, BURST >= 3 (the strategies widen and pause on the same
+    ratio). ``flow_imbalance`` is (lambda_buy - lambda_sell) / total.
+    ``hawkes_calibrated`` is False until the first online MLE refit.
 
     ``book_timestamp`` is the latest submitted book's exchange time in ms, even
     for invalid book contents (None if absent/invalid time). Books are applied
@@ -63,6 +68,8 @@ class LiveSignalsSnapshot:
     hawkes_intensity: float
     hawkes_ratio: float
     hawkes_regime: HawkesRegime
+    flow_imbalance: float
+    hawkes_calibrated: bool
     book_timestamp: float | None
     last_trade_timestamp: float | None
 
@@ -141,7 +148,7 @@ class LiveMarketSignals:
         self._buy_volume: float = 0.0
         self._notional: float = 0.0
         self._trade_count: int = 0
-        self._hawkes: HawkesIntensity = HawkesIntensity(mu=0.5, alpha=0.8, beta=2.0)
+        self.features = FeatureEngine(tick_size=0.01, event_history=20_000)
         self._last_hawkes_s: float = 0.0
         self._evaluation_s: float = 0.0
 
@@ -209,8 +216,16 @@ class LiveMarketSignals:
 
         event_s = timestamp / 1_000.0
         if event_s >= self._last_hawkes_s:
-            self._hawkes.update(event_s)
+            self.features.on_trade(int(timestamp), price, qty, tick.is_buyer_maker)
             self._last_hawkes_s = event_s
+
+    async def refit(self) -> bool:
+        """Refit buy/sell Hawkes by MLE on recent market orders (off the event loop)."""
+        params = await asyncio.to_thread(FeatureEngine.fit_hawkes, self.features.recent_events())
+        if params is None:
+            return False
+        self.features.set_hawkes(*params, calibrated=True)
+        return True
 
     def snapshot(self, now_ms: float) -> LiveSignalsSnapshot:
         """Evaluate without an arrival; invalid evaluation times raise ValueError."""
@@ -218,9 +233,8 @@ class LiveMarketSignals:
         if now is None:
             raise ValueError("now_ms must be finite and positive (exchange milliseconds)")
         self._evaluation_s = max(self._evaluation_s, self._last_hawkes_s, now / 1_000.0)
-        intensity = float(self._hawkes.evaluate(self._evaluation_s))
-        ratio = intensity / 0.5
-        regime: HawkesRegime = "BURST" if ratio >= 5.0 else "ACTIVE" if ratio >= 2.0 else "QUIET"
+        lb, ls, ratio = self.features.intensities(int(self._evaluation_s * 1000))
+        intensity = lb + ls
         mid, spread, spread_bps, microprice, offset, imbalance = self._book or (None,) * 6
         has_volume = self._total_volume > 0.0
         return LiveSignalsSnapshot(
@@ -237,7 +251,9 @@ class LiveMarketSignals:
             trade_count=self._trade_count,
             hawkes_intensity=intensity,
             hawkes_ratio=ratio,
-            hawkes_regime=regime,
+            hawkes_regime=regime(ratio),
+            flow_imbalance=(lb - ls) / intensity if intensity > 0 else 0.0,
+            hawkes_calibrated=self.features.calibrated,
             book_timestamp=self._book_timestamp,
             last_trade_timestamp=self._last_trade_timestamp,
         )

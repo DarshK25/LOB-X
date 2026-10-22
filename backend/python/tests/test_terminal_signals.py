@@ -1,4 +1,9 @@
-"""Live signals use observed books/trades, exchange time, and no synthetic arrivals."""
+"""Live signals use observed books/trades, exchange time, and no synthetic arrivals.
+
+Hawkes defaults before the first online refit: buy and sell processes each
+mu=0.5, alpha=0.8, beta=2, so the baseline total is 1.0/s and the stationary
+total is 2 * 0.5 / (1 - 0.4) = 5/3 per second.
+"""
 import math
 from dataclasses import replace
 
@@ -8,6 +13,9 @@ from lobx.market_data.trade_stream import TradeTick
 from lobx.terminal.signals import LiveMarketSignals
 
 EPOCH_MS = 1_700_000_000_000
+STATIONARY = 5.0 / 3.0
+ONE_BUY = 1.8  # 0.5 + 0.8 (buy) + 0.5 (sell)
+ONE_BUY_AFTER_1S = 1.0 + 0.8 * math.exp(-2.0)
 BOOK_FIELDS = (
     "mid", "spread", "spread_bps", "microprice", "microprice_offset", "imbalance",
 )
@@ -35,9 +43,11 @@ def test_uninitialized_signals_do_not_invent_book_or_trade_values():
     assert state.buy_volume == 0.0
     assert state.buy_fraction is None
     assert state.trade_count == 0
-    assert state.hawkes_intensity == 0.5
-    assert state.hawkes_ratio == 1.0
+    assert state.hawkes_intensity == pytest.approx(1.0)
+    assert state.hawkes_ratio == pytest.approx(1.0 / STATIONARY)
     assert state.hawkes_regime == "QUIET"
+    assert state.flow_imbalance == 0.0
+    assert state.hawkes_calibrated is False
 
 
 def test_l1_spread_microprice_and_imbalance_follow_book_changes():
@@ -117,29 +127,39 @@ def test_hawkes_decay_uses_seconds_and_snapshots_do_not_add_arrivals():
     signals = LiveMarketSignals()
     signals.on_trade(trade())
     immediate = signals.snapshot(EPOCH_MS)
-    assert immediate.hawkes_intensity == pytest.approx(1.3)
-    assert immediate.hawkes_ratio == pytest.approx(2.6)
-    assert immediate.hawkes_regime == "ACTIVE"
+    assert immediate.hawkes_intensity == pytest.approx(ONE_BUY)
+    assert immediate.hawkes_ratio == pytest.approx(ONE_BUY / STATIONARY)
+    assert immediate.hawkes_regime == "NORMAL"
+    assert immediate.flow_imbalance == pytest.approx(0.8 / ONE_BUY)
 
     decayed = signals.snapshot(EPOCH_MS + 1_000)
-    # One second, beta=2: 0.5 + 0.8 * exp(-2), not exp(-2000).
-    assert decayed.hawkes_intensity == pytest.approx(0.6082682265892902)
-    assert decayed.hawkes_ratio == pytest.approx(1.2165364531785804)
+    # One second, beta=2: decay exp(-2), not exp(-2000).
+    assert decayed.hawkes_intensity == pytest.approx(ONE_BUY_AFTER_1S)
+    assert decayed.hawkes_ratio == pytest.approx(ONE_BUY_AFTER_1S / STATIONARY)
     assert decayed.hawkes_regime == "QUIET"
     assert signals.snapshot(EPOCH_MS + 1_000) == decayed
     assert decayed.trade_count == 1
-    assert signals.snapshot(EPOCH_MS + 60_000).hawkes_intensity == pytest.approx(0.5)
+    assert signals.snapshot(EPOCH_MS + 60_000).hawkes_intensity == pytest.approx(1.0)
 
 
-def test_burst_is_an_uncalibrated_activity_ratio_not_a_trading_signal():
+def test_burst_regime_from_a_cluster_of_buy_market_orders():
+    signals = LiveMarketSignals()
+    for i in range(6):
+        signals.on_trade(trade(i, timestamp=EPOCH_MS + i))
+
+    state = signals.snapshot(EPOCH_MS + 5)
+    assert state.hawkes_ratio >= 3.0
+    assert state.hawkes_regime == "BURST"
+    assert state.flow_imbalance > 0.8
+
+
+def test_prints_in_the_same_millisecond_are_one_market_order():
     signals = LiveMarketSignals()
     for trade_id in range(3):
         signals.on_trade(trade(trade_id))
-
     state = signals.snapshot(EPOCH_MS)
-    assert state.hawkes_intensity == pytest.approx(2.9)
-    assert state.hawkes_ratio == pytest.approx(5.8)
-    assert state.hawkes_regime == "BURST"
+    assert state.trade_count == 3
+    assert state.hawkes_intensity == pytest.approx(ONE_BUY)
 
 
 def test_duplicate_trade_ids_are_ignored_even_if_payload_changes():
@@ -164,7 +184,7 @@ def test_deduplication_is_bounded_fifo_not_unlimited_replay_protection():
     state = signals.snapshot(EPOCH_MS)
     assert state.trade_count == 4
     assert state.total_volume == 4.0
-    assert state.hawkes_intensity == pytest.approx(3.7)
+    assert state.hawkes_intensity == pytest.approx(ONE_BUY)
     signals.on_trade(trade(3))
     assert signals.snapshot(EPOCH_MS).trade_count == 4
 
@@ -181,20 +201,20 @@ def test_late_unique_trade_counts_in_totals_without_rewinding_hawkes():
     assert state.vwap == 100.0
     assert state.trade_count == 2
     assert state.last_trade_timestamp == EPOCH_MS + 1_000
-    assert state.hawkes_intensity == pytest.approx(1.3)
+    assert state.hawkes_intensity == pytest.approx(ONE_BUY)
     signals.on_trade(trade(1, timestamp=EPOCH_MS))
     assert signals.snapshot(EPOCH_MS + 1_000).trade_count == 2
 
     signals.on_trade(trade(3, timestamp=EPOCH_MS + 2_000))
     assert signals.snapshot(EPOCH_MS + 2_000).hawkes_intensity == pytest.approx(
-        1.4082682265892903
+        ONE_BUY_AFTER_1S + 0.8
     )
 
 
 def test_clock_skew_and_backwards_snapshots_cannot_increase_intensity():
     signals = LiveMarketSignals()
     signals.on_trade(trade(timestamp=EPOCH_MS + 1_000))
-    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(1.3)
+    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(ONE_BUY)
     later = signals.snapshot(EPOCH_MS + 2_000)
     backwards = signals.snapshot(EPOCH_MS - 60_000)
     assert backwards.hawkes_intensity == later.hawkes_intensity
@@ -206,7 +226,7 @@ def test_trade_behind_snapshot_clock_decays_from_its_real_event_time():
     signals.snapshot(EPOCH_MS + 1_000)
     signals.on_trade(trade(timestamp=EPOCH_MS))
 
-    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(0.6082682265892902)
+    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(ONE_BUY_AFTER_1S)
     assert signals.snapshot(EPOCH_MS).last_trade_timestamp == EPOCH_MS
 
 
@@ -221,7 +241,7 @@ def test_invalid_trade_numbers_are_ignored_without_reserving_the_id(field, inval
     assert empty.total_volume == 0.0
     assert empty.vwap is None
     assert empty.last_trade_timestamp is None
-    assert empty.hawkes_intensity == 0.5
+    assert empty.hawkes_intensity == pytest.approx(1.0)
 
     signals.on_trade(valid)
     assert signals.snapshot(EPOCH_MS).trade_count == 1
@@ -237,7 +257,7 @@ def test_unrepresentable_trade_totals_do_not_poison_session_state():
     assert state.trade_count == 1
     assert state.total_volume == 1e308
     assert state.vwap == 1.0
-    assert state.hawkes_intensity == pytest.approx(1.3)
+    assert state.hawkes_intensity == pytest.approx(ONE_BUY)
 
 
 @pytest.mark.parametrize(
@@ -283,7 +303,7 @@ def test_invalid_snapshot_time_raises_without_mutating_state(invalid):
     signals.on_trade(trade())
     with pytest.raises(ValueError):
         signals.snapshot(invalid)
-    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(1.3)
+    assert signals.snapshot(EPOCH_MS).hawkes_intensity == pytest.approx(ONE_BUY)
 
 
 @pytest.mark.parametrize("invalid", [0, -1, 1.5, True])

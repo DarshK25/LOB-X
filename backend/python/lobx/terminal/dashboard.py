@@ -172,23 +172,25 @@ class LiveDashboard:
         buys = f"{snapshot.buy_fraction:.0%}" if snapshot.buy_fraction is not None else "—"
         activity = (f"{snapshot.hawkes_intensity:.2f}/s {snapshot.hawkes_regime}"
                     if snapshot.trade_count else "warming up")
+        model = "MLE fit (online)" if snapshot.hawkes_calibrated else "default params, fitting…"
         content: Text | Table
         if compact:
             content = Text(no_wrap=True, overflow="crop")
-            content.append(f"L1 OBI {obi}  Micro−Mid {offset} {self.quote_asset}\n", style="cyan")
-            content.append(f"Hawkes λ {activity} (heuristic)\n", style="yellow")
-            content.append(f"VWAP {vwap}  Buy {buys} · session", style="dim")
+            content.append(f"L1 OBI {obi}  Micro-Mid {offset} {self.quote_asset}\n", style="cyan")
+            content.append(f"Hawkes λ {activity}  flow {snapshot.flow_imbalance:+.2f}\n", style="yellow")
+            content.append(f"VWAP {vwap}  Buy {buys} · {model}", style="dim")
         else:
             content = Table.grid(expand=True, padding=(0, 1))
             content.add_column(style="dim", no_wrap=True)
             content.add_column(justify="right", no_wrap=True, overflow="crop")
             content.add_row("L1 OBI", obi)
-            content.add_row("Micro−Mid", f"{offset} {self.quote_asset}")
+            content.add_row("Micro-Mid", f"{offset} {self.quote_asset}")
             content.add_row("Session VWAP", vwap)
             content.add_row("Taker buy vol", buys)
             content.add_row("Hawkes λ", activity)
-            content.add_row("λ / fixed μ", f"{snapshot.hawkes_ratio:.1f}× · heuristic" if snapshot.trade_count else "—")
-            content.add_row("Model", "uncalibrated activity")
+            content.add_row("λ / stationary", f"{snapshot.hawkes_ratio:.2f}x  flow {snapshot.flow_imbalance:+.2f}"
+                            if snapshot.trade_count else "-")
+            content.add_row("Model", model)
         return Panel(content, title="Microstructure", border_style="cyan", padding=(0, 1))
 
     def _book_panel(self, snapshot: LiveSignalsSnapshot, rows: int) -> Panel:
@@ -289,11 +291,16 @@ class LiveDashboard:
         """Render until interruption or transport completion, then always close."""
         self._run_error = None
         ws_task = asyncio.create_task(self.collector.run())
+        refit_task: asyncio.Task | None = None
+        next_refit = time.monotonic() + 30.0
         try:
             with Live(self.generate_layout(), console=self.console, screen=False,
                       auto_refresh=False, vertical_overflow="crop") as live:
                 while True:
                     await asyncio.sleep(0.25)
+                    if time.monotonic() >= next_refit and (refit_task is None or refit_task.done()):
+                        refit_task = asyncio.create_task(self.signals.refit())
+                        next_refit = time.monotonic() + 60.0
                     if ws_task.done():
                         if not ws_task.cancelled():
                             ws_task.result()  # Propagate actual transport errors to the CLI.
@@ -307,5 +314,7 @@ class LiveDashboard:
         finally:
             self.collector.stop()
             ws_task.cancel()
+            if refit_task is not None:
+                refit_task.cancel()
             await asyncio.gather(ws_task, return_exceptions=True)
             await self.collector.close_async()

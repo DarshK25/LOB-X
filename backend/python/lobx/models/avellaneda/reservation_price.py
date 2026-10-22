@@ -1,14 +1,10 @@
 """
-Avellaneda-Stoikov Reservation Price.
+Avellaneda-Stoikov reservation price.
 
-r(s, q, t) = s - q * γ * σ² * (T - t)
+r(s, q, tau) = s - q * gamma * sigma^2 * tau
 
-Where:
-    s   = current mid-price
-    q   = current inventory (signed)
-    γ   = risk-aversion parameter
-    σ   = volatility (std of mid-price)
-    T-t = remaining time horizon
+Units: s in USD, q in lots (position / order size), gamma in 1/USD,
+sigma in USD/sqrt(second), tau in seconds. Then q*gamma*sigma^2*tau is USD.
 """
 from __future__ import annotations
 
@@ -20,21 +16,7 @@ def reservation_price(
     sigma: float,
     time_remaining: float,
 ) -> float:
-    """
-    Compute the AS reservation price.
-
-    Parameters
-    ----------
-    mid           : current mid-price
-    inventory     : signed inventory (positive = long)
-    gamma         : absolute risk aversion coefficient (> 0)
-    sigma         : annualised or per-tick volatility
-    time_remaining: fraction of trading session remaining [0, 1]
-
-    Returns
-    -------
-    Reservation price r
-    """
+    """Inventory-adjusted indifference price. Long inventory lowers it."""
     if gamma <= 0:
         raise ValueError("gamma must be positive")
     return mid - inventory * gamma * (sigma ** 2) * time_remaining

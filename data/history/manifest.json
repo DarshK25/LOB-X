@@ -1,0 +1,46 @@
+{
+  "windows": [
+    {
+      "label": "calm",
+      "symbol": "BTCUSDT",
+      "date": "2024-03-30",
+      "start_utc": "08:00",
+      "end_utc": "12:00",
+      "venue": "Binance USD-M futures",
+      "book_file": "BTCUSDT_2024-03-30_0800-1200_book.parquet",
+      "book_rows": 1135887,
+      "book_sha256": "f096760d1fcb61c27ea4ab3b0e9f118162418693e76de3cc295eebe9577f98ca",
+      "trades_file": "BTCUSDT_2024-03-30_0800-1200_trades.parquet",
+      "trade_rows": 84013,
+      "trades_sha256": "4b2f91c72311b6209ac2ce282dcea9d6c3e7d059f7c7e215b96d480b1190a636",
+      "price_min": 69872.3,
+      "price_max": 70254.7,
+      "btc_volume": 14184.528999999999,
+      "sources": [
+        "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-30.zip",
+        "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-30.zip"
+      ]
+    },
+    {
+      "label": "crash",
+      "symbol": "BTCUSDT",
+      "date": "2024-03-05",
+      "start_utc": "13:00",
+      "end_utc": "17:00",
+      "venue": "Binance USD-M futures",
+      "book_file": "BTCUSDT_2024-03-05_1300-1700_book.parquet",
+      "book_rows": 7402248,
+      "book_sha256": "62582a3a979924e9ef91356f7024d730e5f928157839998764b1b7aeb69e3b18",
+      "trades_file": "BTCUSDT_2024-03-05_1300-1700_trades.parquet",
+      "trade_rows": 1493487,
+      "trades_sha256": "c4cbf925a92fe114d21af9290949f3bfd0225c39336d789e912ad1a4726e5b77",
+      "price_min": 64536.6,
+      "price_max": 69350.0,
+      "btc_volume": 299518.539,
+      "sources": [
+        "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-05.zip",
+        "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-05.zip"
+      ]
+    }
+  ]
+}

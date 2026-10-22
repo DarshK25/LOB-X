@@ -1,271 +1,186 @@
-"""
-live/quote_loop.py — StrategyRunner: wires Collector → Strategy → ShadowQuoteEngine.
+"""Live paper trading: every strategy on the same live feed, one account each.
 
-Responsibilities
-────────────────
-1. Register callbacks on the Collector (on_book_update, on_trade).
-2. On each book update:
-     a. Read best bid/ask from the C++ engine (or Python reference book as
-        fallback if the C++ engine isn't compiled).
-     b. Feed the mid-price into the EWMA volatility estimator.
-     c. Build a frozen MarketState.
-     d. Call strategy.on_tick(state) → QuotePair.
-     e. Pass quotes to ShadowQuoteEngine.update_quotes().
-3. On each trade tick → ShadowQuoteEngine.on_trade() for fill checks.
-4. Periodic logging every LOG_EVERY_N ticks showing live strategy state.
+Collector (L2 depth + trades) -> FeatureEngine -> MarketSimulator -> SimAccounts
 
-Book priority (C++ engine first):
-  The C++ engine book is what strategies were built to quote against.
-  If it's not available (machine without C++ toolchain / pure data-collection
-  mode), the Python reference book is used automatically — same state, just
-  slower.  The strategy code doesn't know or care which book is providing
-  the bid/ask.
+The live path uses exactly the simulator and features of the backtests, so a
+live paper session is an out-of-sample test of the same code. Sequence:
+  1. warm-up: record top-of-book and trades for ``warmup_s`` seconds
+  2. calibrate sigma, A, k, Hawkes and the fair-value model on the warm-up
+     window (worker thread) and build the strategy suite from it
+  3. paper-trade every strategy; refit Hawkes online every ``refit_s``
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import TYPE_CHECKING
+import time
+from collections import deque
+from typing import TYPE_CHECKING, Callable
 
-from lobx.strategy.base import MarketState, Strategy
-from lobx.execution.shadow_engine import ExecutionAssumptions, ShadowQuoteEngine
-from lobx.analytics.volatility import EWMAVolatilityEstimator
-from lobx.risk import MarketMakingRiskConfig, MarketMakingRiskManager
-from lobx.analytics.pnl_waterfall import summarize_pnl_waterfall
+import numpy as np
+
+from lobx.analytics.calibration import calibrate
+from lobx.analytics.performance import account_report
+from lobx.backtest.data import MarketData
+from lobx.execution.simulator import ExecutionConfig, MarketSimulator, SimAccount
+from lobx.strategy.base import Strategy
+from lobx.strategy.features import FeatureEngine, HawkesParams
 
 if TYPE_CHECKING:
     from lobx.market_data.collector import Collector
     from lobx.market_data.trade_stream import TradeTick
-    from lobx.terminal.telemetry import TelemetryCollector
 
 logger = logging.getLogger(__name__)
 
-# Log a status line every this many synced depth events (~10s at BTC rates).
-LOG_EVERY_N = 100
+SuiteFactory = Callable[[dict], list[Strategy]]
 
 
-class StrategyRunner:
-    """Connects a live Collector to one Strategy + one ShadowQuoteEngine.
-
-    Parameters
-    ----------
-    collector : running Collector instance (call BEFORE collector.run())
-    strategy  : any Strategy implementation (FixedSpreadStrategy, AS, ...)
-    """
-
-    def __init__(
-        self,
-        collector: "Collector",
-        strategy: Strategy,
-        execution_assumptions: ExecutionAssumptions | None = None,
-        risk_config: MarketMakingRiskConfig | None = None,
-        telemetry: "TelemetryCollector | None" = None,
-    ) -> None:
-        self.collector     = collector
-        self.strategy      = strategy
-        self.shadow_engine = ShadowQuoteEngine(assumptions=execution_assumptions or ExecutionAssumptions())
-        self.risk_manager  = MarketMakingRiskManager(risk_config)
-        self.vol_estimator = EWMAVolatilityEstimator(decay=0.98)
-        self.telemetry     = telemetry
-
-        self._tick_count  = 0
-        self._last_mid: float | None = None
-
-        # Wire callbacks — must happen BEFORE collector.run() is awaited.
-        collector.on_book_update(self._on_book_update)
+class LiveSimRunner:
+    def __init__(self, collector: "Collector", build_suite: SuiteFactory, config: ExecutionConfig,
+                 warmup_s: float = 120.0, refit_s: float = 60.0, decision_ms: int = 100,
+                 venue: str = "Binance spot") -> None:
+        self.collector = collector
+        self.build_suite = build_suite
+        self.config = config
+        self.warmup_s = warmup_s
+        self.refit_s = refit_s
+        self.decision_ms = decision_ms
+        self.venue = venue
+        self.features = FeatureEngine(config.tick_size, event_history=20_000)
+        self.sim: MarketSimulator | None = None
+        self.accounts: list[SimAccount] = []
+        self.calibration: dict | None = None
+        self.status = "warming up"
+        self.error: str | None = None
+        self.started = time.monotonic()
+        self.first_event_ms: int | None = None
+        self.recorded_book: list[tuple] = []
+        self.recorded_trades: list[tuple] = []
+        self._mid_ts: list[int] = []
+        self._mids: list[float] = []
+        self._next_mid = 0
+        self._last_l1: tuple | None = None
+        self.recent_fills: deque[tuple[str, tuple]] = deque(maxlen=400)
+        self._fill_counts: dict[str, int] = {}
+        self._calibrating = False
+        self._next_refit = 0.0
+        collector.on_book_update(self._on_book)
         collector.on_trade(self._on_trade)
 
-        logger.info(
-            "StrategyRunner initialised: strategy=%s  engine_mirror=%s",
-            strategy.name(),
-            "C++" if collector.engine_mirror is not None else "Python reference book",
-        )
-
-    # ── Internal helpers ──────────────────────────────────────────────────────
-
-    def _get_best_bid_ask(self) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
-        """Read best bid/ask from C++ engine (preferred) or Python book.
-
-        Returns (bid, ask) each as (price, qty) tuples, or None if not ready.
-        """
-        # C++ engine first — this is the book strategies are meant to use.
-        if self.collector.engine_mirror is not None:
-            engine_bid = self.collector.engine_mirror.book.best_bid()
-            engine_ask = self.collector.engine_mirror.book.best_ask()
-            if engine_bid is not None and engine_ask is not None:
-                # C++ engine returns integer ticks — convert back to USD.
-                from lobx.market_data.engine_mirror import TICKS_PER_UNIT
-                bid = (engine_bid / TICKS_PER_UNIT, 0.0)   # qty not tracked in engine mirror
-                ask = (engine_ask / TICKS_PER_UNIT, 0.0)
-                return bid, ask
-
-        # Fallback: Python reference book.
+    # ── feed ────────────────────────────────────────────────────────────────
+    def _on_book(self, event: dict) -> None:
         book = self.collector.depth_mgr.book
-        return book.best_bid(), book.best_ask()
-
-    # ── Callbacks ─────────────────────────────────────────────────────────────
-
-    def _on_book_update(self, event: dict) -> None:
-        """Called by Collector after every synced depth event."""
-        bid_info, ask_info = self._get_best_bid_ask()
-        if bid_info is None or ask_info is None:
-            return   # book not ready yet
-
-        bid_p, bid_q = bid_info
-        ask_p, ask_q = ask_info
-        mid = (bid_p + ask_p) / 2.0
-        self.shadow_engine.update_market_context(
-            timestamp=int(event.get("E", 0)),
-            mid=mid,
-            best_bid=bid_p,
-            best_ask=ask_p,
-        )
-
-        # Feed EWMA estimator.
-        vol = self.vol_estimator.update(mid)
-        self._last_mid = mid
-
-        # Build frozen state snapshot.
-        state = MarketState.from_book(
-            timestamp=int(event.get("E", 0)),
-            best_bid=bid_p,
-            best_bid_qty=bid_q,
-            best_ask=ask_p,
-            best_ask_qty=ask_q,
-            volatility=vol,
-            inventory=self.shadow_engine.inventory.position,
-            log_return=self.vol_estimator.last_log_return,
-        )
-
-        # Risk is updated before submitting a new quote. It is deliberately
-        # outside the strategy so no strategy implementation can bypass it.
-        self.risk_manager.update_equity(self.shadow_engine.net_pnl(mid))
-
-        # Run strategy.
-        try:
-            quotes = self.strategy.on_tick(state)
-        except Exception:
-            logger.exception("Strategy.on_tick raised — skipping this tick")
+        bid, ask = book.best_bid(), book.best_ask()
+        if bid is None or ask is None:
             return
+        ts = int(event.get("E", 0))
+        l1 = (bid[0], bid[1], ask[0], ask[1])
+        if l1 == self._last_l1:
+            return
+        self._last_l1 = l1
+        if self.first_event_ms is None:
+            self.first_event_ms = ts
+        if ts >= self._next_mid:
+            self._mid_ts.append(ts)
+            self._mids.append(0.5 * (bid[0] + ask[0]))
+            self._next_mid = ts + 100
+        if self.sim is None:
+            self.features.on_book(ts, *l1)
+            self.recorded_book.append((ts, *l1))
+        else:
+            self.sim.on_book(ts, *l1)
+            self._collect_fills()
 
-        # Apply hard limits, then pass displayed L2 quantity to the optional
-        # queue-ahead approximation. The public feed is L2, so this is a
-        # conservative scenario tool rather than true queue reconstruction.
-        risk_events_before = len(self.risk_manager.events)
-        quotes = self.risk_manager.apply_quotes(
-            quotes,
-            self.shadow_engine.inventory.position,
-            timestamp=state.timestamp,
-            market_mid=mid,
-            # update_quotes() cancel-replaces the current pair, so the
-            # projected open-order count is the proposed pair, not old orders.
-            open_orders=0,
-        )
-        for risk_event in self.risk_manager.events[risk_events_before:]:
-            self.shadow_engine.emit_event(risk_event)
-        self.shadow_engine.record_quote_decision(
-            strategy=self.strategy.name(),
-            state=state,
-            quotes=quotes,
-            details=getattr(self.strategy, "last_quote_audit", {}),
-        )
-        book = self.collector.depth_mgr.book
-        bid_ahead = book.bids.get(quotes.bid.price, 0.0) if quotes.bid else 0.0
-        ask_ahead = book.asks.get(quotes.ask.price, 0.0) if quotes.ask else 0.0
-        self.shadow_engine.update_quotes(quotes, state.timestamp, bid_ahead, ask_ahead)
+    def _on_trade(self, tick: "TradeTick") -> None:
+        if self.sim is None:
+            self.features.on_trade(tick.event_time, tick.price, tick.qty, tick.is_buyer_maker)
+            self.recorded_trades.append((tick.event_time, tick.price, tick.qty, tick.is_buyer_maker))
+        else:
+            self.sim.on_trade(tick.event_time, tick.price, tick.qty, tick.is_buyer_maker)
+            self._collect_fills()
 
-        if self.telemetry is not None:
-            from lobx.terminal.bridge import publish_tick
-            publish_tick(
-                self.telemetry,
-                state=state,
-                strategy_name=self.strategy.name(),
-                quotes=quotes,
-                audit=getattr(self.strategy, "last_quote_audit", {}),
-                engine=self.shadow_engine,
-                mark_price=mid,
-                bids=self._top_depth(book.bids, reverse=True),
-                asks=self._top_depth(book.asks, reverse=False),
-            )
+    def _collect_fills(self) -> None:
+        for acc in self.accounts:
+            seen = self._fill_counts.get(acc.name, 0)
+            for f in acc.fills[seen:]:
+                self.recent_fills.append((acc.name, f))
+            self._fill_counts[acc.name] = len(acc.fills)
 
-        # Periodic status log.
-        self._tick_count += 1
-        if self._tick_count % LOG_EVERY_N == 0:
-            fills = self.shadow_engine.fill_count
-            pos   = self.shadow_engine.inventory.position
-            rpnl  = self.shadow_engine.inventory.realized_pnl
-            upnl  = self.shadow_engine.inventory.unrealized_pnl(mid)
-            latest_blocks = [
-                event for event in self.shadow_engine.events
-                if event.get("event_type") == "RISK_BLOCK"
-            ]
-            block_reason = latest_blocks[-1]["reason"] if latest_blocks else None
-            bid_s = f"{quotes.bid.price:.2f}" if quotes.bid else f"BLOCKED[{block_reason}]"
-            ask_s = f"{quotes.ask.price:.2f}" if quotes.ask else f"BLOCKED[{block_reason}]"
-            logger.info(
-                "[%s tick=%d]  mid=%.2f  vol=%.6f  "
-                "quote: BID=%s  ASK=%s  |  "
-                "pos=%.6f  fills=%d  rPnL=%.4f  uPnL=%.4f",
-                self.strategy.name(), self._tick_count, mid, vol,
-                bid_s, ask_s, pos, fills, rpnl, upnl,
-            )
+    # ── calibration ─────────────────────────────────────────────────────────
+    def _warmup_data(self) -> MarketData:
+        b = np.array(self.recorded_book, dtype=float)
+        t = np.array(self.recorded_trades, dtype=float) if self.recorded_trades else np.zeros((0, 4))
+        return MarketData(
+            name="live warm-up", venue=self.venue, tick_size=self.config.tick_size,
+            book_ts=b[:, 0].astype(np.int64), bid=b[:, 1], bid_qty=b[:, 2], ask=b[:, 3],
+            ask_qty=b[:, 4], trade_ts=t[:, 0].astype(np.int64), trade_px=t[:, 1],
+            trade_qty=t[:, 2], trade_ibm=t[:, 3].astype(bool))
 
-    @staticmethod
-    def _top_depth(levels, *, reverse: bool, n: int = 10) -> list[tuple[float, float]]:
-        """Top-N (price, qty) levels, best price first.
+    @property
+    def warmup_elapsed_s(self) -> float:
+        if self.first_event_ms is None or not self._mid_ts:
+            return 0.0
+        return (self._mid_ts[-1] - self.first_event_ms) / 1000.0
 
-        ``levels`` is a price->qty mapping sorted ascending by price (SortedDict).
-        Bids want the highest prices first (reverse=True); asks the lowest.
-        """
+    async def _calibrate(self) -> None:
+        self._calibrating = True
+        self.status = "calibrating"
         try:
-            items = list(levels.items())
-        except AttributeError:
+            data = self._warmup_data()
+            calib = await asyncio.to_thread(calibrate, data)
+            self.features.set_hawkes(HawkesParams.from_dict(calib["hawkes"]["buy"]),
+                                     HawkesParams.from_dict(calib["hawkes"]["sell"]))
+            self.accounts = [SimAccount(s, self.config) for s in self.build_suite(calib)]
+            self.sim = MarketSimulator(self.features, self.accounts, self.decision_ms)
+            self.calibration = calib
+            self.recorded_book.clear()
+            self.recorded_trades.clear()
+            self.status = "trading"
+            self._next_refit = time.monotonic() + self.refit_s
+            logger.info("live calibration: sigma=%.4f A=%.3f k=%.3f", calib["sigma"],
+                        calib["arrival"]["A"], calib["arrival"]["k"])
+        except Exception as exc:  # noqa: BLE001 - surfaced in the dashboard, retried later
+            self.error = f"calibration failed: {exc}"
+            self.status = "warming up"
+            self.warmup_s += 60.0
+            logger.exception("live calibration failed")
+        finally:
+            self._calibrating = False
+
+    async def _refit(self) -> None:
+        params = await asyncio.to_thread(FeatureEngine.fit_hawkes, self.features.recent_events())
+        if params is not None:
+            self.features.set_hawkes(*params, calibrated=True)
+
+    async def maintain(self) -> None:
+        """Call periodically from the UI loop: calibrates and refits when due."""
+        if self.sim is None and not self._calibrating and self.warmup_elapsed_s >= self.warmup_s:
+            await self._calibrate()
+        elif self.sim is not None and time.monotonic() >= self._next_refit:
+            self._next_refit = time.monotonic() + self.refit_s
+            asyncio.create_task(self._refit())
+
+    # ── reporting ───────────────────────────────────────────────────────────
+    def reports(self) -> list[dict]:
+        if self.sim is None or not self.sim.sample_times:
             return []
-        ordered = list(reversed(items)) if reverse else items
-        return [(float(p), float(q)) for p, q in ordered[:n]]
+        mid_ts = np.asarray(self._mid_ts, dtype=np.int64)
+        mids = np.asarray(self._mids, dtype=float)
+        return [account_report(acc, self.sim.sample_times, mid_ts, mids,
+                               fee_aware=bool(getattr(acc.strategy, "fee_aware", False)))
+                for acc in self.accounts]
 
-    def _on_trade(self, trade: "TradeTick") -> None:
-        """Called by Collector after every parsed trade tick."""
-        self.shadow_engine.on_trade(trade)
-        if self.telemetry is not None and self._last_mid is not None:
-            from lobx.terminal.bridge import publish_execution
-            publish_execution(
-                self.telemetry,
-                engine=self.shadow_engine,
-                mark_price=self._last_mid,
-                timestamp=trade.event_time,
-            )
-
-    # ── Session summary ───────────────────────────────────────────────────────
-
-    def summary(self) -> dict:
-        """Return a dict summary of the session for printing at shutdown."""
-        inv  = self.shadow_engine.inventory
-        mid  = self._last_mid or 0.0
-        summary = {
-            "strategy":      self.strategy.name(),
-            "ticks":         self._tick_count,
-            "fills":         self.shadow_engine.fill_count,
-            "position":      inv.position,
-            "avg_entry":     inv.avg_entry_price,
-            "realized_pnl":  inv.realized_pnl,
-            "unrealized_pnl":inv.unrealized_pnl(mid),
-            "fees_paid":     self.shadow_engine.fees_paid,
-            "total_pnl":     self.shadow_engine.net_pnl(mid),
-            "max_inventory": inv.max_inventory,
-            "average_inventory": inv.average_inventory,
-            "inventory_variance": inv.inventory_variance,
-            "inventory_half_life_ms": inv.inventory_half_life_ms,
-            "time_spent_long_ms": inv.time_spent_long_ms,
-            "time_spent_short_ms": inv.time_spent_short_ms,
-            "inventory_distribution": inv.inventory_distribution,
-            "risk_halted":   self.risk_manager.halted,
-            "risk_halt_reason": self.risk_manager.halt_reason,
-        }
-        summary.update(summarize_pnl_waterfall(
-            self.shadow_engine.fills,
-            [],
-            realized_pnl=inv.realized_pnl,
-            unrealized_pnl=inv.unrealized_pnl(mid),
-            fees=self.shadow_engine.fees_paid,
-        ))
-        return summary
+    def mark_to_market(self) -> list[dict]:
+        """Cheap per-frame view: equity, position, fills per account."""
+        f = self.features
+        mid = 0.5 * (f.bid + f.ask) if f.ready else 0.0
+        out = []
+        for a in self.accounts:
+            maker = [x for x in a.fills if x[6]]
+            out.append({"name": a.name, "equity": a.equity_at(mid) if mid else 0.0,
+                        "position": a.position, "fills": len(maker),
+                        "filled_qty": sum(x[3] for x in maker), "sent_qty": a.sent_qty,
+                        "fees": a.fees, "orders": a.orders_sent, "halted": a.halted,
+                        "equity_curve": a.equity,
+                        "bid": a._working[1], "ask": a._working[-1]})
+        return out

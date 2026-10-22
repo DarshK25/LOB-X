@@ -1,89 +1,20 @@
 """
-Collector — the central orchestrator of the Phase 1 data pipeline.
+Collector: one Binance websocket connection feeding a synced local book.
 
-╔══════════════════════════════════════════════════════════════════════╗
-║  DATA FLOW (read this first — it answers the "how does it connect"  ║
-║  question completely)                                                ║
-╚══════════════════════════════════════════════════════════════════════╝
+  <sym>@depth@100ms ─► DepthStreamManager ─► LocalOrderBook (SortedDict levels)
+                         buffer until the REST snapshot arrives, then apply
+                         diffs with sequence checks; resync on any gap
+                           ├─► RotatingParquetWriter   depth rows (optional)
+                           ├─► EngineMirrorBridge      C++ book mirror (optional)
+                           └─► on_book_update callbacks (dashboard, LiveSimRunner)
+  <sym>@trade ─────────► TradeTick
+                           ├─► RotatingParquetWriter   trade rows (optional)
+                           └─► on_trade callbacks
 
-  Binance Exchange (real live market)
-         │
-         │ WebSocket frames arrive ~10× / second
-         │ Two streams in one connection:
-         │   btcusdt@depth@100ms  →  incremental depth diff events
-         │   btcusdt@trade        →  every individual match
-         ▼
-  BinanceWSClient
-    receive loop (async for frame in websocket)
-    parse JSON → call _on_message(msg)
-         │
-         │ msg = {"stream": "btcusdt@depth@100ms", "data": {...}}
-         │
-         ├─── "@depth" in stream ──────────────────────────────────────────►
-         │                                                                  │
-         │    DepthStreamManager.handle_event(event)                        │
-         │      Phase A (before sync):                                      │
-         │        buffer this event; kick off REST snapshot fetch           │
-         │      Phase B (after sync):                                       │
-         │        apply diff to LocalOrderBook (SortedDict bids/asks)       │
-         │        check U == prev_u + 1; resync if broken                   │
-         │                │                                                 │
-         │                ▼                                                 │
-         │    ORDER BOOK #1 — LocalOrderBook (Python side)                  │
-         │    ┌────────────────────────────────────────────┐               │
-         │    │  bids: SortedDict{price → total_qty}       │               │
-         │    │  asks: SortedDict{price → total_qty}       │               │
-         │    │  best_bid(), best_ask(), mid_price()       │               │
-         │    └────────────────────────────────────────────┘               │
-         │      ↑ This is the REFERENCE book. You can                      │
-         │        compare it against Binance's live UI                     │
-         │        to prove the sync algorithm is correct.                  │
-         │                │                                                 │
-         │                ├──► RotatingParquetWriter (depth rows)           │
-         │                │      one row per price level that changed       │
-         │                │      flushed every 500 rows OR 30-sec heartbeat │
-         │                │                                                 │
-         │                └──► EngineMirrorBridge (if C++ built)            │
-         │                       convert float→ticks, qty→lots              │
-         │                       cancel old synthetic order                  │
-         │                       insert new synthetic order                  │
-         │                                │                                 │
-         │                                ▼                                 │
-         │              ORDER BOOK #2 — lobx_cpp.OrderBook (C++ side)       │
-         │              ┌─────────────────────────────────────────────────┐ │
-         │              │  std::map<Price, PriceLevel> bids (descending)  │ │
-         │              │  std::map<Price, PriceLevel> asks (ascending)   │ │
-         │              │  best_bid(), best_ask(), mid_price()             │ │
-         │              └─────────────────────────────────────────────────┘ │
-         │                ↑ This is the ENGINE book. Phase 2 strategies     │
-         │                  (AvellanedaStoikov, AlmgrenChriss) will quote   │
-         │                  against THIS book, not the Python one.          │
-         │                                                                  │
-         │                ↓ on_book_update callbacks fire here ─────────────┘
-         │                  (watch_live.py, later: StrategyRunner)
-         │
-         └─── "@trade" in stream ─────────────────────────────────────────►
-                                                                            │
-              parse_trade_event(event) → TradeTick                          │
-                │                                                           │
-                ├──► RotatingParquetWriter (trade rows)                     │
-                │      one row per trade (price, qty, taker side, time)     │
-                │                                                           │
-                └──► on_trade callbacks fire here ─────────────────────────┘
-                       (watch_live.py prints these in real time;
-                        Phase 3 Hawkes calibration reads the Parquet file)
-
-WHY TWO ORDER BOOKS?
-────────────────────
-LocalOrderBook is pure Python, easy to inspect from a REPL, and lets you
-compare best_bid/best_ask against Binance's own UI — that's your correctness
-proof for the sync algorithm.
-
-lobx_cpp.OrderBook is your actual matching engine — the thing your Phase 2
-strategy calls add_limit_order() and cancel() on to place and cancel quotes.
-It runs at C++ speed because strategies call it thousands of times per second.
-
-The EngineMirrorBridge keeps both in sync: every depth event goes to both.
+The local Python book is the reference used by every consumer. The C++ mirror
+loads the same snapshot and applies the same level changes without matching;
+it exists to exercise lobx_cpp on real depth, not to drive strategies.
+Strategies and paper trading run in ``lobx.execution.simulator``.
 """
 from __future__ import annotations
 
@@ -122,7 +53,7 @@ TradeCallback = Callable[[TradeTick], None]
 
 class Collector:
     """
-    Orchestrates the full Phase 1 data pipeline.
+    Orchestrates the live data pipeline.
 
     Parameters
     ----------
@@ -161,6 +92,7 @@ class Collector:
         # ── Order Book #1: Python reference book ──────────────────────────────
         self.depth_mgr = DepthStreamManager(self.symbol)
         self._written_snapshot_generation = 0
+        self._mirror_generation = 0
 
         # ── Order Book #2: C++ engine book (optional) ─────────────────────────
         self.engine_mirror: EngineMirrorBridge | None = None
@@ -391,7 +323,13 @@ class Collector:
 
         # ── Step 4: update C++ engine ─────────────────────────────────────────
         if self.engine_mirror is not None:
-            self.engine_mirror.apply_depth_event(event)
+            if self.depth_mgr.sync_generation > self._mirror_generation:
+                # The local book already includes this event.
+                book = self.depth_mgr.book
+                self.engine_mirror.load_snapshot(book.bids.items(), book.asks.items())
+                self._mirror_generation = self.depth_mgr.sync_generation
+            else:
+                self.engine_mirror.apply_depth_event(event)
 
         # ── Step 5: fire callbacks ────────────────────────────────────────────
         for cb in self._book_cbs:

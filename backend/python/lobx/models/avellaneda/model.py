@@ -1,7 +1,7 @@
 """Canonical Avellaneda-Stoikov quote calculation.
 
-Convention used by every caller:
-    time_remaining is seconds and sigma is price units per sqrt(second).
+Units: mid USD, inventory in lots, gamma and kappa in 1/USD,
+sigma in USD/sqrt(second), time_remaining in seconds.
 """
 from __future__ import annotations
 
@@ -29,13 +29,9 @@ def calculate_quote(
     time_remaining: float,
     kappa: float,
 ) -> ASQuote:
-    """Calculate reservation price and symmetric quotes around it."""
-    reservation = reservation_price(
-        mid, inventory, gamma, sigma, time_remaining
-    )
-    spread_half = half_spread(
-        gamma, sigma, time_remaining, kappa
-    )
+    """Reservation price and symmetric quotes around it."""
+    reservation = reservation_price(mid, inventory, gamma, sigma, time_remaining)
+    spread_half = half_spread(gamma, sigma, time_remaining, kappa)
     return ASQuote(
         reservation_price=reservation,
         full_spread=spread_half * 2.0,

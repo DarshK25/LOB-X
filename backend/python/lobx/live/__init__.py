@@ -1,4 +1,4 @@
-"""live package — StrategyRunner wiring live data to strategy + shadow engine."""
-from lobx.live.quote_loop import StrategyRunner
+"""Live paper trading on the shared simulator."""
+from lobx.live.quote_loop import LiveSimRunner
 
-__all__ = ["StrategyRunner"]
+__all__ = ["LiveSimRunner"]

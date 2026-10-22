@@ -318,7 +318,8 @@ def test_render_obeys_cell_width_and_total_height_for_empty_and_populated_chart(
         assert len(text.plain.splitlines()) <= height
         assert all(cell_len(row) <= width for row in text.plain.splitlines())
         assert "\t" not in text.plain
-        console = Console(file=StringIO(), width=max(1, width), force_terminal=True)
+        console = Console(file=StringIO(), width=max(1, width), force_terminal=True,
+                          legacy_windows=False)
         console.print(text, end="")
         assert len(console.file.getvalue().splitlines()) <= height
 
