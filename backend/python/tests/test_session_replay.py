@@ -78,7 +78,8 @@ def test_live_session_records_and_replays_exactly(tmp_path):
     meta = {"symbol": "TEST", "venue": "test", "tick_size": data.tick_size, "capital_usd": 5_000,
             "decision_ms": 100, "event_history": 20_000,
             "suite": {"gamma_as": 0.03, "gamma_glft": 1.0, "maker_fee": 0.0,
-                      "alpha_gates": {"base": 0.0, "fee_floor": 0.05}}}
+                      "alpha_gates": {"base": 0.0, "fee_floor": 0.05,
+                                      "base_active": False, "fee_floor_active": True}}}
     rec = SessionRecorder(tmp_path / "TEST.jsonl.gz", meta)
     cfg = ExecutionConfig(tick_size=data.tick_size, maker_fee=0.0, taker_fee=0.0)
     col = FakeCollector()
@@ -89,6 +90,8 @@ def test_live_session_records_and_replays_exactly(tmp_path):
     gates = {a.name: getattr(a.strategy, "alpha_pause_sigma", None) for a in runner.accounts}
     assert gates["AdaptiveGLFT alpha-gated"] == 0.0
     assert gates["AdaptiveGLFT alpha-gated fee-floor"] == 0.05
+    robust = next(a.strategy for a in runner.accounts if a.name == "AdaptiveGLFT robust-gated")
+    assert robust.enabled is False
     assert runner.quote_qty == pytest.approx(round(500 / warm.mids[-1], 5))
     assert runner.config.max_position == pytest.approx(5_000 / warm.mids[-1])
     for i, ev in enumerate(events[cut:]):

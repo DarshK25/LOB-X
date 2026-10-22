@@ -16,7 +16,7 @@ MarketSimulator(features, accounts)
 SimAccount(strategy, ExecutionConfig)        one strategy, its own orders, cash, inventory, fees
 ```
 
-All accounts see the same events and the same `MarketState`, so the eleven-way
+All accounts see the same events and the same `MarketState`, so the thirteen-way
 strategy comparison is one pass over the data, and differences between
 accounts come only from the strategies. The live `sim` command runs exactly
 this code on the Binance websocket feed. `FeatureEngine` is shared too, so live

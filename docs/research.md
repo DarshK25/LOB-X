@@ -31,6 +31,14 @@ worst inner-fold PnL across baseline and 150+150 ms execution. Its outer
 holdout remained +$0.202 at 50+50 ms but fell to −$0.742 at 150+150 ms; no
 tested threshold survived that larger delay.
 
+A later robust-activation variant compares the selected threshold's normal
+and 150+150 ms inner-fold PnL with zero. It abstains for the next holdout when
+that worst-case score is non-positive. In two rolling selloff folds it skipped
+the fold where the ordinary alpha-gated strategy lost −$0.054 and traded the
+fold where it made +$0.064. Pooled robust-gated PnL was therefore +$0.064, but
+on only 14 fills: encouraging risk selection, not sufficient promotion
+evidence.
+
 ## Setup
 
 * **Data.** Five Binance USD-M BTCUSDT futures windows with tick-by-tick L1
@@ -71,6 +79,8 @@ Strategies:
 | AdaptiveGLFT fee-floor | moves quotes beyond fee plus margin instead of simply stopping |
 | AdaptiveGLFT alpha-gated | pauses the side exposed to a validated short-horizon prediction |
 | AdaptiveGLFT alpha-gated fee-floor | combines adverse-side pause and fee floor |
+| AdaptiveGLFT robust-gated | the alpha-gated strategy, active only when normal and latency-stressed inner PnL both beat zero |
+| AdaptiveGLFT robust-gated fee-floor | robust activation plus the fee floor |
 
 ## Calibration
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lobx.models.glft import glft_coefficients, glft_depths
-from lobx.strategy.base import MarketState, QuotePair, Strategy, passive_pair
+from lobx.strategy.base import NO_QUOTES, MarketState, QuotePair, Strategy, passive_pair
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,7 @@ class GLFTStrategy(Strategy):
         fee_floor: bool = False,
         edge_margin_bps: float = 0.0,
         alpha_pause_sigma: float | None = None,
+        enabled: bool = True,
         label: str | None = None,
     ) -> None:
         if qty <= 0:
@@ -88,10 +89,13 @@ class GLFTStrategy(Strategy):
         self.fee_floor = fee_floor
         self.edge_margin_bps = edge_margin_bps
         self.alpha_pause_sigma = alpha_pause_sigma
+        self.enabled = enabled
         self.label = label
         self.last_quote_audit: dict[str, float] = {}
 
     def on_tick(self, state: MarketState, position: float) -> QuotePair:
+        if not self.enabled:
+            return NO_QUOTES
         q = self.lots(position)
         bid_depth, ask_depth, half_spread, skew = glft_depths(state.sigma, q, self.coeffs)
         excess = max(0.0, state.hawkes_ratio - 1.0)

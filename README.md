@@ -128,7 +128,7 @@ falls back to Zig's bundled clang from pip, so no Visual Studio is needed.
 python scripts/lobx_cli.py            # interactive; or pass a command:
 python scripts/lobx_cli.py live       # candles, L2 book, tape, Hawkes regime gauge (MLE refit every 60 s)
 python scripts/lobx_cli.py sim BTCUSDT futures mm_rebate cap=10000 120 600
-                                      # 120 s warm-up, then paper trading, 11 accounts of $10k
+                                      # 120 s warm-up, then paper trading, 13 accounts of $10k
 python scripts/lobx_cli.py sessions             # recorded sessions in data/sessions
 python scripts/lobx_cli.py replay               # rerun the latest session, check every fill matches
 python scripts/lobx_cli.py replay mm_rebate     # same market data, rebate fee tier

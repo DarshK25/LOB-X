@@ -133,3 +133,9 @@ def test_alpha_gate_pauses_adverse_side_but_preserves_inventory_reduction():
     assert flat.bid is not None and flat.ask is None
     long_inventory = g.on_tick(rising, 0.001)
     assert long_inventory.ask is not None
+
+
+def test_disabled_robust_gate_abstains():
+    g = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, enabled=False)
+    q = g.on_tick(st(), 0.0)
+    assert q.bid is None and q.ask is None

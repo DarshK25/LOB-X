@@ -121,6 +121,25 @@ def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
             alpha_pause_sigma=alpha_gates["fee_floor"],
             label="AdaptiveGLFT alpha-gated fee-floor",
         ),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            alpha_pause_sigma=alpha_gates["base"],
+            enabled=alpha_gates.get("base_active", True),
+            label="AdaptiveGLFT robust-gated",
+        ),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            fee_floor=True, edge_margin_bps=0.2,
+            alpha_pause_sigma=alpha_gates["fee_floor"],
+            enabled=alpha_gates.get("fee_floor_active", True),
+            label="AdaptiveGLFT robust-gated fee-floor",
+        ),
     ]
 
 
@@ -187,21 +206,31 @@ def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> di
     run = run_backtest(data, accounts, make_features(data, calib))
     rows = run.by_name()
 
-    def best(prefix: str) -> float:
+    def best(prefix: str) -> tuple[float, bool, float]:
         candidates = [(threshold, rows[f"{prefix} {threshold:g}"])
                       for threshold in ALPHA_PAUSE_GRID]
         active = [item for item in candidates if item[1]["fills_per_hour"] >= 25.0]
         pool = active or candidates
-        return max(pool, key=lambda item: (
+        selected = max(pool, key=lambda item: (
             min(item[1]["net_pnl"],
                 rows[f"{prefix} {item[0]:g} latency150"]["net_pnl"]),
             item[1]["net_pnl"],
             item[1]["fill_expectancy_5000ms"],
-        ))[0]
+        ))
+        robust_pnl = min(selected[1]["net_pnl"],
+                         rows[f"{prefix} {selected[0]:g} latency150"]["net_pnl"])
+        return selected[0], robust_pnl > 0.0, robust_pnl
+
+    base_threshold, base_active, base_robust_pnl = best("base")
+    floor_threshold, floor_active, floor_robust_pnl = best("floor")
 
     return {
-        "base": best("base"),
-        "fee_floor": best("floor"),
+        "base": base_threshold,
+        "base_active": base_active,
+        "base_robust_pnl": base_robust_pnl,
+        "fee_floor": floor_threshold,
+        "fee_floor_active": floor_active,
+        "fee_floor_robust_pnl": floor_robust_pnl,
         "grid": {
             prefix: [{"threshold_sigma": threshold,
                       "net_pnl": rows[f"{prefix} {threshold:g}"]["net_pnl"],
@@ -289,7 +318,9 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
             tuning_data, selection_calib, fee, tuned["GLFT"])
         log(f"  [{fee}] tuned gamma: AS={tuned['AS']:g}  GLFT={tuned['GLFT']:g} "
             f"alpha gate={tuned['alpha_gate']['base']:g}/"
-            f"{tuned['alpha_gate']['fee_floor']:g} sigma ({tuned['seconds']:.0f}s + "
+            f"{tuned['alpha_gate']['fee_floor']:g} sigma "
+            f"active={tuned['alpha_gate']['base_active']}/"
+            f"{tuned['alpha_gate']['fee_floor_active']} ({tuned['seconds']:.0f}s + "
             f"{tuned['alpha_gate']['seconds']:.0f}s)")
         prof = FEE_PROFILES[fee]
         cfg = exec_config(oos, fee)
@@ -299,7 +330,7 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
         # Stress variants of the full model, run in the same pass on the same data.
         hero = lambda: strategy_suite(
             calib, data.tick_size, tuned["AS"], tuned["GLFT"], prof["maker"],
-            alpha_gates=tuned["alpha_gate"])[9]
+            alpha_gates=tuned["alpha_gate"])[11]
         stress = {
             "latency 50+50ms": exec_config(oos, fee, feed_latency_ms=50, order_latency_ms=50),
             "latency 150+150ms": exec_config(oos, fee, feed_latency_ms=150, order_latency_ms=150),
