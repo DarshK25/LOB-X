@@ -41,6 +41,52 @@
         "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-05.zip",
         "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-05.zip"
       ]
+    },
+    {
+      "label": "rally_feb",
+      "symbol": "BTCUSDT",
+      "date": "2024-02-28",
+      "start_date": "2024-02-28",
+      "end_date": "2024-02-28",
+      "start_utc": "12:00",
+      "end_utc": "16:00",
+      "venue": "Binance USD-M futures",
+      "book_file": "BTCUSDT_2024-02-28_1200-1600_book.parquet",
+      "book_rows": 10413512,
+      "book_sha256": "f3f0b97c50306dbb6505413def7c6da33a98c5e1b2895b9990edd94484da67e0",
+      "trades_file": "BTCUSDT_2024-02-28_1200-1600_trades.parquet",
+      "trade_rows": 864785,
+      "trades_sha256": "e6f35efe42ff19612e4e7d289a91ab7b4b4dbc37974065cf2ebbb013bd801e4a",
+      "price_min": 58940.8,
+      "price_max": 61437.4,
+      "base_volume": 230822.847,
+      "sources": [
+        "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-02-28.zip",
+        "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-02-28.zip"
+      ]
+    },
+    {
+      "label": "volatile_mar14",
+      "symbol": "BTCUSDT",
+      "date": "2024-03-14",
+      "start_date": "2024-03-14",
+      "end_date": "2024-03-14",
+      "start_utc": "06:00",
+      "end_utc": "10:00",
+      "venue": "Binance USD-M futures",
+      "book_file": "BTCUSDT_2024-03-14_0600-1000_book.parquet",
+      "book_rows": 2790214,
+      "book_sha256": "3831b451dc95b3cb86c2f927aebcbc893c87d591d07122c19474d739495136f9",
+      "trades_file": "BTCUSDT_2024-03-14_0600-1000_trades.parquet",
+      "trade_rows": 229300,
+      "trades_sha256": "0a93f3fea6f912d9d354ba59ccd42708936ba97aad6a8320569574346fc0436e",
+      "price_min": 73152.6,
+      "price_max": 73881.4,
+      "base_volume": 39936.171,
+      "sources": [
+        "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-14.zip",
+        "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-14.zip"
+      ]
     }
   ]
 }
