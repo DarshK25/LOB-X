@@ -66,23 +66,41 @@ def exec_config(data: MarketData, fee: str, **overrides) -> ExecutionConfig:
 
 
 def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
-                   maker_fee: float) -> list:
+                   maker_fee: float, qty: float = QTY) -> list:
+    """The seven strategies compared everywhere. ``qty`` is the size of one quote.
+
+    Inventory enters every model in lots (position / qty), so gamma keeps its
+    meaning when the quote size is scaled.
+    """
     A, k = calib["arrival"]["A"], calib["arrival"]["k"]
     fv = calib["fair_value"]
     fair = FairValueModel(fv["b_micro"], fv["b_flow"], fv["b_obi"])
     half_tick = tick / 2.0
     return [
-        NoTradeStrategy(QTY, label="NoTrade"),
-        FixedSpreadStrategy(half_tick, QTY, label="FixedSpread"),
-        InventorySkewStrategy(half_tick, QTY, skew_per_lot=tick / 2.0, label="InventorySkew"),
-        AvellanedaStoikovStrategy(gamma_as, k, AS_HORIZON_S, QTY, label="AS"),
-        GLFTStrategy(gamma_glft, A, k, QTY, label="GLFT"),
-        GLFTStrategy(gamma_glft, A, k, QTY, hawkes_widen=HAWKES_WIDEN,
+        NoTradeStrategy(qty, label="NoTrade"),
+        FixedSpreadStrategy(half_tick, qty, label="FixedSpread"),
+        InventorySkewStrategy(half_tick, qty, skew_per_lot=tick / 2.0, label="InventorySkew"),
+        AvellanedaStoikovStrategy(gamma_as, k, AS_HORIZON_S, qty, label="AS"),
+        GLFTStrategy(gamma_glft, A, k, qty, label="GLFT"),
+        GLFTStrategy(gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
                      hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, label="GLFT+Hawkes+FV"),
-        GLFTStrategy(gamma_glft, A, k, QTY, hawkes_widen=HAWKES_WIDEN,
+        GLFTStrategy(gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
                      hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
                      fee_aware=True, label="GLFT+HFV fee-aware"),
     ]
+
+
+def size_from_capital(capital_usd: float, mid: float, lot_step: float = 1e-5,
+                      quote_fraction: float = 0.1) -> tuple[float, float]:
+    """(quote size, position limit) in base units for an unlevered account.
+
+    One quote is ``quote_fraction`` of capital, and the position limit is the
+    whole capital, i.e. at most 1 / quote_fraction lots of inventory.
+    """
+    if capital_usd <= 0 or mid <= 0:
+        raise ValueError("capital and mid must be positive")
+    qty = max(lot_step, round(capital_usd * quote_fraction / mid / lot_step) * lot_step)
+    return round(qty, 10), round(capital_usd / mid, 10)
 
 
 def tune_gamma(data: MarketData, calib: dict, fee: str) -> dict:

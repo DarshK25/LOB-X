@@ -58,6 +58,12 @@ data/raw/
 data/processed/
 data/backtest/
 data/temp/
+data/sessions/
+data/*.log
+data/*.out
+data/*.err
+*.pdb
+backend/python/*.lib
 logs/
 *.parquet
 *.csv

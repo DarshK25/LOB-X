@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """LOB-X interactive terminal.
 
 Commands (type ``help`` inside the CLI):
@@ -13,24 +13,23 @@ Commands (type ``help`` inside the CLI):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import sys
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend" / "python"))
 
 from rich.console import Console  # noqa: E402
+from rich.markup import escape  # noqa: E402
 from rich.prompt import Prompt  # noqa: E402
 from rich.table import Table  # noqa: E402
 
 from lobx.backtest import research  # noqa: E402
 from lobx.backtest.data import list_history, load_history  # noqa: E402
 from lobx.execution.fees import FEE_PROFILES  # noqa: E402
-from lobx.execution.simulator import ExecutionConfig  # noqa: E402
+from lobx.live.setup import SESSIONS_DIR, get_json, latest_calibration  # noqa: E402
 from lobx.models.glft import glft_coefficients, glft_depths  # noqa: E402
 from lobx.models.avellaneda.optimal_spread import optimal_spread  # noqa: E402
 from lobx.models.avellaneda.reservation_price import reservation_price  # noqa: E402
@@ -54,33 +53,8 @@ LOGO = """[bold green]
 """
 
 
-def _get_json(url: str):
-    req = urllib.request.Request(url, headers={"User-Agent": "lobx"})
-    with urllib.request.urlopen(req, timeout=8.0) as resp:
-        return json.loads(resp.read().decode())
-
-
-DEFAULT_GAMMA = 0.01
-
-
-def _latest_calibration(fee: str = "vip0") -> dict | None:
-    """Calibration plus tuned gammas from a single-window research result.
-
-    Calm windows are preferred (the normal state of the market), newest first.
-    """
-    files = sorted(RESULTS.glob("*.json"),
-                   key=lambda p: ("calm" not in p.name, -p.stat().st_mtime))
-    for path in files:
-        res = json.loads(path.read_text())
-        if "calibration" not in res or res["window"].startswith("cross"):
-            continue
-        tuning = res["fees"].get(fee, next(iter(res["fees"].values()), {})).get("tuning", {})
-        return res["calibration"] | {
-            "_source": path.name,
-            "_gamma_as": tuning.get("AS", DEFAULT_GAMMA),
-            "_gamma_glft": tuning.get("GLFT", DEFAULT_GAMMA),
-        }
-    return None
+_get_json = get_json
+_latest_calibration = latest_calibration
 
 
 class LobxCLI:
@@ -96,6 +70,7 @@ class LobxCLI:
             "live": self.cmd_live, "sim": self.cmd_sim, "backtest": self.cmd_backtest,
             "bt": self.cmd_backtest, "quote": self.cmd_quote, "as": self.cmd_quote,
             "scan": self.cmd_scan, "book": self.cmd_book, "status": self.cmd_status,
+            "replay": self.cmd_replay, "sessions": self.cmd_sessions,
             "help": self.cmd_help, "?": self.cmd_help,
         }
         if cmd in ("exit", "quit", "q"):
@@ -116,16 +91,24 @@ class LobxCLI:
         t = Table(title="LOB-X commands", header_style="bold cyan")
         t.add_column("Command", style="bold yellow", no_wrap=True)
         t.add_column("What it does")
-        t.add_row("live [SYM] [5s|1m] [candle|line]", "Live market view with the calibrated Hawkes gauge (online MLE refit every 60 s).")
-        t.add_row("sim [SYM] [FEE] [WARMUP_S] [RUN_S]", "Paper-trade all strategies on the live feed, one account each. "
-                  f"FEE in {', '.join(FEE_PROFILES)} (default spot_vip0). Calibrates on the first WARMUP_S seconds "
-                  "(default 120); stops after RUN_S seconds or Ctrl+C.")
-        t.add_row("backtest [WINDOW] [FEE]", f"Calibrate + tune in-sample, compare strategies out-of-sample. Windows: {', '.join(list_history()) or 'none (run scripts/fetch_history.py)'}.")
-        t.add_row("quote [SYM] [q_lots]", "AS and GLFT quotes for inventory q (lots of 0.001) from the latest calibration and the live futures book.")
-        t.add_row("scan [N]", "Rank Binance USD-M futures symbols by quoted spread vs the VIP0 maker fee.")
-        t.add_row("book [SYM]", "One spot L2 snapshot.")
-        t.add_row("status", "C++ engine, data and results availability.")
-        t.add_row("exit", "Leave.")
+
+        def row(cmd: str, what: str) -> None:
+            t.add_row(escape(cmd), what)
+
+        row("live [SYM] [5s|1m] [candle|line]", "Live market view with the calibrated Hawkes gauge (online MLE refit every 60 s).")
+        row("sim [SYM] [FEE] [cap=10000] [WARMUP_S] [RUN_S] [norec]", "Paper-trade all strategies on the live feed, one account each. "
+                  f"FEE in {', '.join(FEE_PROFILES)} (default spot_vip0). Each account has cap= USD (default 10000): "
+                  "one quote is 10% of it, inventory is capped at 100%. Calibrates on the first WARMUP_S seconds "
+                  "(default 120); stops after RUN_S seconds or Ctrl+C. Every event is recorded to data/sessions unless norec.")
+        row("sessions", "List recorded live sessions.")
+        row("replay [FILE] [FEE]", "Rerun a recorded session through the simulator and check the fills match exactly (default: latest). "
+            "With FEE, replay the same market data under another fee profile.")
+        row("backtest [WINDOW] [FEE]", f"Calibrate + tune in-sample, compare strategies out-of-sample. Windows: {', '.join(list_history()) or 'none (run scripts/fetch_history.py)'}.")
+        row("quote [SYM] [q_lots]", "AS and GLFT quotes for inventory q (lots of 0.001) from the latest calibration and the live futures book.")
+        row("scan [N]", "Rank Binance USD-M futures symbols by quoted spread vs the VIP0 maker fee.")
+        row("book [SYM]", "One spot L2 snapshot.")
+        row("status", "C++ engine, data and results availability.")
+        row("exit", "Leave.")
         CONSOLE.print(t)
 
     # ── live views ──────────────────────────────────────────────────────────
@@ -146,15 +129,19 @@ class LobxCLI:
             CONSOLE.print(f"[red]{dash._run_error}[/red]")
 
     def cmd_sim(self, args: list[str]) -> None:
-        from lobx.live.quote_loop import LiveSimRunner
-        from lobx.market_data.collector import Collector
+        from lobx.live.setup import build_live_sim
         from lobx.terminal.sim_dashboard import SimDashboard
 
-        symbol, fee = "BTCUSDT", "spot_vip0"
+        symbol, fee, capital, record = "BTCUSDT", "spot_vip0", 10_000.0, True
         numbers = []
         for a in args:
-            if a.lower() in FEE_PROFILES:
-                fee = a.lower()
+            low = a.lower()
+            if low in FEE_PROFILES:
+                fee = low
+            elif m := re.fullmatch(r"(?:cap=|\$)([0-9.]+)(k?)", low):
+                capital = float(m[1]) * (1000 if m[2] else 1)
+            elif low in ("norec", "--no-record"):
+                record = False
             elif _is_number(a):
                 numbers.append(float(a))
             else:
@@ -162,31 +149,77 @@ class LobxCLI:
         warmup = numbers[0] if numbers else 120.0
         duration = numbers[1] if len(numbers) > 1 else None
         prof = FEE_PROFILES[fee]
-        tick = self._spot_tick(symbol)
-        cfg = ExecutionConfig(tick_size=tick, maker_fee=prof["maker"], taker_fee=prof["taker"],
-                              max_position=0.01)
+        runner = build_live_sim(symbol, fee, warmup, capital, record=record)
+        try:
+            asyncio.run(SimDashboard(runner, symbol, prof["label"], console=CONSOLE).run(duration))
+        finally:
+            runner.close()
+        self._print_reports(runner.reports(), f"Live paper session · {symbol} · {prof['label']} · "
+                                              f"${capital:,.0f} capital")
+        if runner.recorder is not None:
+            CONSOLE.print(f"[dim]Recorded {runner.recorder.events:,} events to "
+                          f"{runner.recorder.path}  ·  replay with: replay {runner.recorder.path.name}[/dim]")
 
-        tuned = _latest_calibration() or {}
-        g_as = tuned.get("_gamma_as", DEFAULT_GAMMA)
-        g_glft = tuned.get("_gamma_glft", DEFAULT_GAMMA)
+    def cmd_sessions(self, _args=None) -> None:
+        from lobx.backtest.session import load_session
 
-        def build(calib: dict):
-            return research.strategy_suite(calib, tick, gamma_as=g_as, gamma_glft=g_glft,
-                                           maker_fee=prof["maker"])
+        files = sorted(SESSIONS_DIR.glob("*.jsonl.gz"))
+        if not files:
+            CONSOLE.print("[yellow]No recorded sessions yet. Run sim.[/yellow]")
+            return
+        t = Table(title=f"Recorded sessions · {SESSIONS_DIR}", header_style="bold cyan")
+        for c in ("File", "Fee", "Capital", "Events", "Fills", "Traded"):
+            t.add_column(c, justify="left" if c == "File" else "right", no_wrap=True)
+        for f in files[-20:]:
+            s = load_session(f)
+            t.add_row(f.name, s.meta.get("fee", "?"), f"${s.meta.get('capital_usd', 0):,.0f}",
+                      f"{len(s.events):,}", str(s.by_kind.get("fill", 0)),
+                      "yes" if s.calibration else "warm-up only")
+        CONSOLE.print(t)
 
-        collector = Collector(symbol=symbol, enable_engine_mirror=False, enable_storage=False,
-                              heartbeat_s=60)
-        runner = LiveSimRunner(collector, build, cfg, warmup_s=warmup)
-        asyncio.run(SimDashboard(runner, symbol, prof["label"], console=CONSOLE).run(duration))
-        self._print_reports(runner.reports(), f"Live paper session · {symbol} · {prof['label']}")
+    def cmd_replay(self, args: list[str]) -> None:
+        from dataclasses import replace
 
-    @staticmethod
-    def _spot_tick(symbol: str) -> float:
-        info = _get_json(f"https://api.binance.com/api/v3/exchangeInfo?symbol={symbol}")
-        for f in info["symbols"][0]["filters"]:
-            if f["filterType"] == "PRICE_FILTER":
-                return float(f["tickSize"])
-        raise ValueError(f"no tick size for {symbol}")
+        from lobx.backtest.session import compare_fills, load_session, replay_session
+
+        fee = next((a.lower() for a in args if a.lower() in FEE_PROFILES), None)
+        files_arg = [a for a in args if a.lower() not in FEE_PROFILES]
+        if files_arg:
+            path = Path(files_arg[0])
+            path = path if path.exists() else SESSIONS_DIR / files_arg[0]
+        else:
+            files = sorted(SESSIONS_DIR.glob("*.jsonl.gz"))
+            if not files:
+                CONSOLE.print("[yellow]No recorded sessions yet. Run sim.[/yellow]")
+                return
+            path = files[-1]
+        s = load_session(path)
+        CONSOLE.print(f"[bold magenta]Replaying {path.name}[/bold magenta] [dim]"
+                      f"{len(s.events):,} events · {s.meta.get('fee_label', '')}[/dim]")
+        if fee is None:
+            rep = replay_session(s)
+            title = "Recorded vs replayed fills"
+        else:
+            from lobx.backtest.session import suite_from_meta
+            from lobx.execution.simulator import ExecutionConfig
+
+            prof = FEE_PROFILES[fee]
+            meta = s.meta | {"suite": s.meta["suite"] | {"maker_fee": prof["maker"]}}
+            cfg = replace(ExecutionConfig(**s.calibration["config"]), maker_fee=prof["maker"],
+                          taker_fee=prof["taker"])
+            rep = replay_session(s, build_suite=suite_from_meta(meta), config=cfg)
+            title = f"Same session replayed at {prof['label']} (fills differ by design)"
+        cmp = compare_fills(s, rep)
+        t = Table(title=title, header_style="bold cyan")
+        for c in ("Strategy", "Recorded", "Replayed", "Net $ (replay)", "Match"):
+            t.add_column(c, justify="left" if c == "Strategy" else "right")
+        mid = rep.sim.features.bid * 0.5 + rep.sim.features.ask * 0.5
+        for acc in rep.accounts:
+            c = cmp[acc.name]
+            ok = "[green]exact[/green]" if c["match"] else f"[red]differs at #{c['first_mismatch']}[/red]"
+            t.add_row(acc.name, str(c["recorded"]), str(c["replayed"]),
+                      f"{acc.equity_at(mid):+.4f}", ok)
+        CONSOLE.print(t)
 
     # ── research ────────────────────────────────────────────────────────────
     def cmd_backtest(self, args: list[str]) -> None:

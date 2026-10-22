@@ -111,9 +111,22 @@ class SimAccount:
         self._last_send: dict[int, int] = {BID: -10**15, ASK: -10**15}
         self._next_oid = 1
         self._mid = 0.0
+        # Optional event sink: listener(kind, fields). Used by the live session
+        # recorder; None in backtests, so it costs one attribute check.
+        self.listener = None
+
+    def working_quote(self, side: int) -> "Order | None":
+        """The order currently representing our quote on ``side`` (may be in flight)."""
+        order = self._working[side]
+        return order if order is not None and order.remaining > 1e-12 else None
+
+    def _emit(self, kind: str, **fields) -> None:
+        if self.listener is not None:
+            self.listener(kind, {"acct": self.name, **fields})
 
     # ── accounting ──────────────────────────────────────────────────────────
-    def _apply_fill(self, ts: int, side: int, price: float, qty: float, maker: bool) -> None:
+    def _apply_fill(self, ts: int, side: int, price: float, qty: float, maker: bool,
+                    oid: int = 0) -> None:
         fee = price * qty * (self.cfg.maker_fee if maker else self.cfg.taker_fee)
         signed = qty if side == BID else -qty
         pos = self.position
@@ -133,6 +146,9 @@ class SimAccount:
         self.cash -= signed * price
         self.fees += fee
         self.fills.append((ts, side, price, qty, fee, self._mid, maker))
+        if self.listener is not None:
+            self._emit("fill", ts=ts, oid=oid, side=side, px=price, qty=qty, fee=fee,
+                       maker=maker, mid=self._mid, pos=self.position)
 
     def equity_at(self, mid: float) -> float:
         return self.cash + self.position * mid - self.fees
@@ -142,6 +158,8 @@ class SimAccount:
         if order.cancel_at is None:
             order.cancel_at = ts + self.cfg.round_trip_ms
             self.cancels_sent += 1
+            if self.listener is not None:
+                self._emit("cancel", ts=ts, oid=order.oid, effective=order.cancel_at)
         if self._working[order.side] is order:
             self._working[order.side] = None
 
@@ -157,6 +175,9 @@ class SimAccount:
         self._last_send[side] = ts
         self.orders_sent += 1
         self.sent_qty += qty
+        if self.listener is not None:
+            self._emit("order", ts=ts, oid=order.oid, side=side, px=price, qty=qty,
+                       live_at=order.arrive_at)
 
     def _manage(self, side: int, quote, ts: int) -> None:
         cur = self._working[side]
@@ -206,6 +227,8 @@ class SimAccount:
                     self.rejects += 1
                     if self._working[o.side] is o:
                         self._working[o.side] = None
+                    if self.listener is not None:
+                        self._emit("reject", ts=ts, oid=o.oid, reason="post_only")
                     continue
                 best, best_qty = (bid, bid_qty) if o.side == BID else (ask, ask_qty)
                 better = o.price > best if o.side == BID else o.price < best
@@ -229,13 +252,13 @@ class SimAccount:
         for o in self.live:
             if o.side == BID:
                 if ask <= o.price:
-                    self._apply_fill(ts, BID, o.price, o.remaining, True)
+                    self._apply_fill(ts, BID, o.price, o.remaining, True, o.oid)
                     o.remaining = 0.0
                     continue
                 best, best_qty, ahead = bid, bid_qty, o.price > bid
             else:
                 if bid >= o.price:
-                    self._apply_fill(ts, ASK, o.price, o.remaining, True)
+                    self._apply_fill(ts, ASK, o.price, o.remaining, True, o.oid)
                     o.remaining = 0.0
                     continue
                 best, best_qty, ahead = ask, ask_qty, o.price < ask
@@ -282,7 +305,7 @@ class SimAccount:
             else:
                 continue
             if fill > 0:
-                self._apply_fill(ts, side, o.price, fill, True)
+                self._apply_fill(ts, side, o.price, fill, True, o.oid)
                 o.remaining -= fill
                 avail -= fill
         self.live = [o for o in self.live if o.remaining > 1e-12]

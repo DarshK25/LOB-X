@@ -99,8 +99,12 @@ class SimDashboard:
         t.append(f"  * {r.status.upper()}", style=status_style)
         t.append(f"  {el // 60:02d}:{el % 60:02d}", style="dim")
         cfg = r.config
+        size = (f" · ${r.capital_usd:,.0f}/account · quote {r.quote_qty:g} · limit {cfg.max_position:g}"
+                if r.quote_qty else f" · ${r.capital_usd:,.0f}/account")
         t.append(f"  · {self.fee_label} · latency {cfg.feed_latency_ms}+{cfg.order_latency_ms} ms"
-                 f" · queue {cfg.queue_model} · limit {cfg.max_position:g}", style="dim")
+                 f" · queue {cfg.queue_model}{size}", style="dim")
+        if r.recorder is not None:
+            t.append(f" · rec {r.recorder.events:,} ev", style="dim magenta")
         return Panel(t, border_style="bright_black")
 
     def _strategy_panel(self, width: int) -> Panel:
@@ -116,11 +120,12 @@ class SimDashboard:
                 msg.append(f"\n{r.error}", style="red")
             return Panel(msg, title="Strategies", border_style="bright_black")
         rows = r.mark_to_market()
-        spark_w = max(8, width - 100)
+        spark_w = max(8, width - 122)
         table = Table(box=None, expand=True, padding=(0, 1))
-        for col, just in (("Strategy", "left"), ("Net PnL", "right"), ("Bid", "right"),
-                          ("Ask", "right"), ("Position", "right"), ("Prints", "right"),
-                          ("Edge/fill", "right"), ("Adverse 5s", "right"), ("Equity", "left")):
+        for col, just in (("Strategy", "left"), ("Net PnL", "right"), ("Return", "right"),
+                          ("Bid", "right"), ("Ask", "right"), ("Position", "right"),
+                          ("Fills", "right"), ("Volume", "right"), ("Edge/fill", "right"),
+                          ("Adverse 5s", "right"), ("Equity", "left")):
             table.add_column(col, justify=just, no_wrap=True)
         f = r.features
         now, tick = f.last_ts, r.config.tick_size
@@ -132,16 +137,19 @@ class SimDashboard:
                 name.append(" HALT", style="bold red")
             table.add_row(
                 name, money(x["equity"]),
+                Text(f"{x['return_bps']:+.2f}bp",
+                     style="green" if x["return_bps"] > 0 else "red" if x["return_bps"] < 0 else "dim"),
                 quote_text(x["bid"], f.bid, tick, now), quote_text(x["ask"], f.ask, tick, now),
-                Text(f"{x['position']:+.4f}", style="cyan" if x["position"] else "dim"),
-                str(x["fills"]),
+                Text(f"{x['position']:+.5f}", style="cyan" if x["position"] else "dim"),
+                str(x["fills"]), f"${x['volume_usd']:,.0f}",
                 f"{rep['edge_per_fill_usd']:+.5f}" if rep.get("fills") else "-",
                 f"{rep['adverse_bps']:+.2f}bp" if rep.get("fills") else "-",
                 Text(sparkline(x["equity_curve"], spark_w),
                      style="green" if x["equity"] >= 0 else "red"))
         return Panel(table, title="Strategies · one account each · same feed",
-                     subtitle="Bid/Ask are the live quotes. '3t back' = three ticks behind the touch. "
-                              "Edge and adverse selection refresh every 5 s.",
+                     subtitle="Return = net PnL / account capital (1 bp = 0.01%). Bid/Ask are the live "
+                              "quotes; '3t back' = three ticks behind the touch. Edge and adverse "
+                              "selection refresh every 5 s.",
                      border_style="cyan")
 
     def _market_panel(self) -> Panel:
