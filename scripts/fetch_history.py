@@ -49,23 +49,34 @@ DEFAULT_WINDOWS = [
 
 
 def _download(url: str, dest: Path) -> Path:
-    if dest.exists() and dest.stat().st_size > 0:
+    if dest.exists() and zipfile.is_zipfile(dest):
         return dest
+    dest.unlink(missing_ok=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "lobx-research/1.0"})
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as fh:
-        total = int(resp.headers.get("Content-Length", 0))
-        done = 0
-        while chunk := resp.read(1 << 20):
-            fh.write(chunk)
-            done += len(chunk)
-            if total:
-                print(f"\r  {dest.name}: {done / 1e6:7.1f}/{total / 1e6:.1f} MB", end="", flush=True)
-    tmp.replace(dest)
-    print(f"  ({time.time() - t0:.0f}s)")
-    return dest
+    for attempt in range(2):
+        tmp.unlink(missing_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "lobx-research/1.0"})
+        t0 = time.time()
+        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as fh:
+            total = int(resp.headers.get("Content-Length", 0))
+            done = 0
+            while chunk := resp.read(1 << 20):
+                fh.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r  {dest.name}: {done / 1e6:7.1f}/{total / 1e6:.1f} MB",
+                          end="", flush=True)
+        if total and done != total:
+            print(f"\n  incomplete archive ({done:,}/{total:,} bytes), retrying")
+            continue
+        tmp.replace(dest)
+        if zipfile.is_zipfile(dest):
+            print(f"  ({time.time() - t0:.0f}s)")
+            return dest
+        dest.unlink(missing_ok=True)
+        print(f"\n  invalid archive, retrying")
+    raise zipfile.BadZipFile(f"failed to download a valid archive after {attempt + 1} attempts")
 
 
 def _ms(date: str, hhmm: str) -> int:

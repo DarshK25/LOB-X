@@ -87,6 +87,29 @@
         "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-14.zip",
         "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-14.zip"
       ]
+    },
+    {
+      "label": "selloff_mar19",
+      "symbol": "BTCUSDT",
+      "date": "2024-03-19",
+      "start_date": "2024-03-19",
+      "end_date": "2024-03-19",
+      "start_utc": "00:00",
+      "end_utc": "04:00",
+      "venue": "Binance USD-M futures",
+      "book_file": "BTCUSDT_2024-03-19_0000-0400_book.parquet",
+      "book_rows": 4856368,
+      "book_sha256": "826f65f164017579b4d7ff731df3f6a3f9ae5c4a9e2f853e351fec3a1d735182",
+      "trades_file": "BTCUSDT_2024-03-19_0000-0400_trades.parquet",
+      "trade_rows": 688869,
+      "trades_sha256": "dea0d25c4fafdbe045c9d9788703a321424d2df49d0b556fddcd412626035bd3",
+      "price_min": 64893.1,
+      "price_max": 68178.6,
+      "base_volume": 118043.87,
+      "sources": [
+        "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-03-19.zip",
+        "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03-19.zip"
+      ]
     }
   ]
 }
