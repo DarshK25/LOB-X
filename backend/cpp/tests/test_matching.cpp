@@ -77,6 +77,51 @@ TEST_CASE("Multi-level sweep: sell walks through bids", "[matching]") {
     REQUIRE(book.empty());
 }
 
+TEST_CASE("FOK with insufficient liquidity executes nothing", "[matching][fok]") {
+    OrderBook book;
+    book.add_limit_order(sell(100, 3));
+    book.add_limit_order(sell(101, 3));
+    auto trades = book.add_limit_order(Order{gid++, 101, 10, true, TimeInForce::FOK});
+    REQUIRE(trades.empty());
+    REQUIRE(book.total_ask_qty() == 6);
+    REQUIRE(book.ask_levels() == 2);
+}
+
+TEST_CASE("FOK ignores liquidity beyond its limit price", "[matching][fok]") {
+    OrderBook book;
+    book.add_limit_order(sell(100, 3));
+    book.add_limit_order(sell(105, 10));
+    auto trades = book.add_limit_order(Order{gid++, 101, 5, true, TimeInForce::FOK});
+    REQUIRE(trades.empty());
+    REQUIRE(book.total_ask_qty() == 13);
+}
+
+TEST_CASE("FOK with enough liquidity fills completely and never rests", "[matching][fok]") {
+    OrderBook book;
+    book.add_limit_order(sell(100, 3));
+    book.add_limit_order(sell(101, 3));
+    auto trades = book.add_limit_order(Order{gid++, 101, 5, true, TimeInForce::FOK});
+    REQUIRE(trades.size() == 2);
+    REQUIRE(trades[0].qty + trades[1].qty == 5);
+    REQUIRE(book.total_ask_qty() == 1);
+    REQUIRE_FALSE(book.best_bid().has_value());
+}
+
+TEST_CASE("Fully filled passive orders leave the index (cancel returns false)", "[matching]") {
+    OrderBook book;
+    OrderId a = gid;
+    book.add_limit_order(buy(100, 2));
+    OrderId b = gid;
+    book.add_limit_order(buy(100, 2));
+    auto trades = book.add_limit_order(sell(100, 3));
+    REQUIRE(trades.size() == 2);
+    REQUIRE(trades[0].buy_id == a);
+    REQUIRE(trades[1].buy_id == b);
+    REQUIRE_FALSE(book.cancel(a));
+    REQUIRE(book.cancel(b));
+    REQUIRE(book.empty());
+}
+
 TEST_CASE("Trade records correct buy/sell ids", "[matching]") {
     OrderBook book;
     OrderId bid_id = gid;
