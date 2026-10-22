@@ -36,6 +36,7 @@ from lobx.strategy import (
 from lobx.strategy.features import FeatureEngine, HawkesParams
 
 GAMMA_GRID = (1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10.0)
+ALPHA_PAUSE_GRID = (0.0, 0.01, 0.025, 0.05, 0.1)
 QTY = 0.001
 MAX_POSITION = 0.01
 AS_HORIZON_S = 60.0
@@ -66,7 +67,8 @@ def exec_config(data: MarketData, fee: str, **overrides) -> ExecutionConfig:
 
 
 def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
-                   maker_fee: float, qty: float = QTY) -> list:
+                   maker_fee: float, qty: float = QTY,
+                   alpha_gates: dict[str, float] | None = None) -> list:
     """The seven strategies compared everywhere. ``qty`` is the size of one quote.
 
     Inventory enters every model in lots (position / qty), so gamma keeps its
@@ -75,6 +77,7 @@ def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
     A, k = calib["arrival"]["A"], calib["arrival"]["k"]
     fv = calib["fair_value"]
     fair = FairValueModel(fv["b_micro"], fv["b_flow"], fv["b_obi"], fv.get("b_volume", 0.0))
+    alpha_gates = alpha_gates or {"base": 0.025, "fee_floor": 0.025}
     half_tick = tick / 2.0
     return [
         NoTradeStrategy(qty, label="NoTrade"),
@@ -100,6 +103,22 @@ def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
             sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
             directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
             fee_floor=True, edge_margin_bps=0.2, label="AdaptiveGLFT fee-floor",
+        ),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            alpha_pause_sigma=alpha_gates["base"], label="AdaptiveGLFT alpha-gated",
+        ),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            fee_floor=True, edge_margin_bps=0.2,
+            alpha_pause_sigma=alpha_gates["fee_floor"],
+            label="AdaptiveGLFT alpha-gated fee-floor",
         ),
     ]
 
@@ -139,6 +158,50 @@ def tune_gamma(data: MarketData, calib: dict, fee: str) -> dict:
                                  ("net_pnl", "sharpe", "fills", "fills_per_hour", "max_drawdown")}
                              for p in ("AS", "GLFT")}} for g in GAMMA_GRID]
     return {"AS": best("AS"), "GLFT": best("GLFT"), "grid": table, "seconds": run.seconds}
+
+
+def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> dict:
+    """Tune only the adverse-side alpha gate on the chronological inner fold."""
+    prof = FEE_PROFILES[fee]
+    A, k = calib["arrival"]["A"], calib["arrival"]["k"]
+    fv = calib["fair_value"]
+    fair = FairValueModel(fv["b_micro"], fv["b_flow"], fv["b_obi"], fv.get("b_volume", 0.0))
+    cfg = exec_config(data, fee)
+    accounts = []
+    for floor in (False, True):
+        for threshold in ALPHA_PAUSE_GRID:
+            strategy = GLFTStrategy(
+                gamma, A, k, QTY, hawkes_widen=HAWKES_WIDEN,
+                hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair,
+                maker_fee=prof["maker"], sigma_reference=calib["sigma"], sigma_power=0.5,
+                asymmetric_hawkes=True, directional_pause=True, toxicity_widen=0.5,
+                queue_widen=0.25, fee_floor=floor, edge_margin_bps=0.2,
+                alpha_pause_sigma=threshold,
+            )
+            accounts.append(SimAccount(strategy, cfg, name=f"{'floor' if floor else 'base'} {threshold:g}"))
+    run = run_backtest(data, accounts, make_features(data, calib))
+    rows = run.by_name()
+
+    def best(prefix: str) -> float:
+        candidates = [(threshold, rows[f"{prefix} {threshold:g}"])
+                      for threshold in ALPHA_PAUSE_GRID]
+        active = [item for item in candidates if item[1]["fills_per_hour"] >= 25.0]
+        pool = active or candidates
+        return max(pool, key=lambda item: (item[1]["net_pnl"],
+                                            item[1]["fill_expectancy_5000ms"]))[0]
+
+    return {
+        "base": best("base"),
+        "fee_floor": best("floor"),
+        "grid": {
+            prefix: [{"threshold_sigma": threshold,
+                      "net_pnl": rows[f"{prefix} {threshold:g}"]["net_pnl"],
+                      "fills": rows[f"{prefix} {threshold:g}"]["fills"]}
+                     for threshold in ALPHA_PAUSE_GRID]
+            for prefix in ("base", "floor")
+        },
+        "seconds": run.seconds,
+    }
 
 
 def _clean(report: dict) -> dict:
@@ -211,15 +274,21 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
                     "calibration": calib, "fees": {}}
     for fee in fees:
         tuned = tune_gamma(tuning_data, selection_calib, fee)
+        tuned["alpha_gate"] = tune_alpha_gate(
+            tuning_data, selection_calib, fee, tuned["GLFT"])
         log(f"  [{fee}] tuned gamma: AS={tuned['AS']:g}  GLFT={tuned['GLFT']:g} "
-            f"({tuned['seconds']:.0f}s)")
+            f"alpha gate={tuned['alpha_gate']['base']:g}/"
+            f"{tuned['alpha_gate']['fee_floor']:g} sigma ({tuned['seconds']:.0f}s + "
+            f"{tuned['alpha_gate']['seconds']:.0f}s)")
         prof = FEE_PROFILES[fee]
         cfg = exec_config(oos, fee)
-        suite = strategy_suite(calib, data.tick_size, tuned["AS"], tuned["GLFT"], prof["maker"])
+        suite = strategy_suite(calib, data.tick_size, tuned["AS"], tuned["GLFT"], prof["maker"],
+                               alpha_gates=tuned["alpha_gate"])
         accounts = [SimAccount(s, cfg) for s in suite]
         # Stress variants of the full model, run in the same pass on the same data.
-        hero = lambda: strategy_suite(calib, data.tick_size, tuned["AS"], tuned["GLFT"],
-                                      prof["maker"])[5]
+        hero = lambda: strategy_suite(
+            calib, data.tick_size, tuned["AS"], tuned["GLFT"], prof["maker"],
+            alpha_gates=tuned["alpha_gate"])[9]
         stress = {
             "latency 50+50ms": exec_config(oos, fee, feed_latency_ms=50, order_latency_ms=50),
             "latency 150+150ms": exec_config(oos, fee, feed_latency_ms=150, order_latency_ms=150),
@@ -240,7 +309,7 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
         # DSR is diagnostic: OOS remains the actual promotion gate.
         for r in main:
             r["deflated_sharpe_probability"] = deflated_sharpe(
-                r["_minute_pnl"], len(GAMMA_GRID) * 2)
+                r["_minute_pnl"], len(GAMMA_GRID) * 2 + len(ALPHA_PAUSE_GRID) * 2)
         log(f"  [{fee}] OOS {oos.hours:.1f} h in {run.seconds:.0f}s")
         for r in main:
             log(f"    {r['strategy']:<20} net {r['net_pnl']:+9.3f}  fills {r['fills']:6d}  "

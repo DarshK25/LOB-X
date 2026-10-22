@@ -122,3 +122,14 @@ def test_fee_floor_places_quotes_beyond_cost_instead_of_stopping():
     required = s.mid * 2.5 / 1e4
     assert q.bid is not None and s.mid - q.bid.price >= required
     assert q.ask is not None and q.ask.price - s.mid >= required
+
+
+def test_alpha_gate_pauses_adverse_side_but_preserves_inventory_reduction():
+    fair = FairValueModel(b_obi=1.0)
+    g = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, fair_value=fair,
+                     alpha_pause_sigma=0.1)
+    rising = st(best_bid_qty=9.0, best_ask_qty=1.0)
+    flat = g.on_tick(rising, 0.0)
+    assert flat.bid is not None and flat.ask is None
+    long_inventory = g.on_tick(rising, 0.001)
+    assert long_inventory.ask is not None

@@ -61,12 +61,15 @@ class GLFTStrategy(Strategy):
         queue_widen: float = 0.0,
         fee_floor: bool = False,
         edge_margin_bps: float = 0.0,
+        alpha_pause_sigma: float | None = None,
         label: str | None = None,
     ) -> None:
         if qty <= 0:
             raise ValueError("qty must be positive")
         if min(toxicity_widen, queue_widen, edge_margin_bps) < 0:
             raise ValueError("widening and edge-margin parameters must be non-negative")
+        if alpha_pause_sigma is not None and alpha_pause_sigma < 0:
+            raise ValueError("alpha pause threshold must be non-negative")
         self.gamma, self.A, self.k = gamma, A, k
         self.qty = qty
         self.coeffs = glft_coefficients(gamma, k, A)
@@ -84,6 +87,7 @@ class GLFTStrategy(Strategy):
         self.queue_widen = queue_widen
         self.fee_floor = fee_floor
         self.edge_margin_bps = edge_margin_bps
+        self.alpha_pause_sigma = alpha_pause_sigma
         self.label = label
         self.last_quote_audit: dict[str, float] = {}
 
@@ -129,6 +133,14 @@ class GLFTStrategy(Strategy):
                 # Burst: only quote the side that reduces inventory.
                 quote_bid = q < 0
                 quote_ask = q > 0
+        if self.alpha_pause_sigma is not None:
+            threshold = self.alpha_pause_sigma * state.sigma
+            # Avoid the side exposed to the modelled next price move. Quotes
+            # that reduce inventory remain live so this gate cannot trap risk.
+            if alpha > threshold and q <= 0:
+                quote_ask = False
+            if alpha < -threshold and q >= 0:
+                quote_bid = False
         if self.fee_aware:
             pair = passive_pair(state, bid, ask, self.qty, self.qty)
             if pair.bid is not None and fair - pair.bid.price < fee_cost:
@@ -150,6 +162,10 @@ class GLFTStrategy(Strategy):
             "inventory_lots": q,
             "sigma": state.sigma,
             "hawkes_ratio": state.hawkes_ratio,
+            "alpha_pause_threshold": (
+                self.alpha_pause_sigma * state.sigma
+                if self.alpha_pause_sigma is not None else -1.0
+            ),
         }
         return passive_pair(state, bid if quote_bid else None, ask if quote_ask else None,
                             self.qty, self.qty)
