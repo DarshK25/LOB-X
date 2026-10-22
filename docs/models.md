@@ -132,8 +132,11 @@ of the calibration.
 
 ## Fair value (`analytics/calibration.fit_fair_value`)
 
-A ridge regression (λ = 10⁻⁶) of the mid change 2 s ahead on (flow·σ, obi·σ),
-sampled every 100 ms in-sample. Scaling by σ keeps the coefficients
+A ridge regression (λ = 10⁻⁶) of a future mid change on (Hawkes flow·σ,
+L1 imbalance·σ, signed recent trade-volume imbalance·σ), sampled every 100 ms
+in-sample. Candidate horizons are 250, 500, 1,000, 2,000 and 5,000 ms. The
+horizon is chosen on a later chronological inner fold and the model is disabled
+when its validation R² is not positive. Scaling by σ keeps the coefficients
 dimensionless across regimes.
 
 The microprice deviation was dropped. With a one-tick spread it equals
@@ -146,8 +149,11 @@ negative, a sign of collinearity rather than signal.
 | crash | 0.02 | −0.01 |
 | calm → crash | 0.12 | −0.08 |
 
-Short-horizon order-book signal is real in calm markets and does not survive
-a regime change. This is one of the main findings in `research.md`.
+The original fixed two-second signal was real in calm markets and did not
+survive a regime change. The later horizon gate often chooses 250 ms and
+prevents a clearly harmful validation model from reaching OOS, but it still
+does not guarantee profitable fills. This is one of the main findings in
+`research.md`.
 
 ## γ is a hyperparameter
 

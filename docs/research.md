@@ -1,21 +1,49 @@
 # Research: can a calibrated market maker make money on BTCUSDT?
 
-All numbers are out-of-sample, from `python scripts/run_research.py --cross calm crash`.
-Full tables, including the tuning grids, are in
-`results/research/SUMMARY.md`, and raw numbers in the JSON files next to it.
+The original baseline study below covers calm and crash windows. The current
+repository extends it to five real four-hour windows and nested chronological
+selection. Full current tables and tuning grids are in
+`results/research/SUMMARY.md`; raw numbers are in the adjacent JSON files.
+
+## Current five-window extension
+
+The adaptive research added live-volatility scaling, asymmetric Hawkes
+widening, signed-volume toxicity, L1 queue pressure, a fee floor and an
+adverse-side fair-value gate. Fair-value horizon and alpha-gate thresholds are
+chosen on a later inner fold; final parameters are refit on the complete outer
+training half before the unseen outer holdout.
+
+At the market-maker rebate scenario, `AdaptiveGLFT alpha-gated` produced:
+
+* calm +$0.026;
+* crash +$0.135;
+* volatile −$1.480;
+* selloff +$0.437 (451 fills, 51.2% fee-adjusted 5 s fill-win rate,
+  95% bootstrap PnL CI [+$0.054, +$1.067]).
+
+These are mixed results, not evidence of a universal winner. The positive
+results also depend on access to a −0.5 bp maker rebate. At ordinary VIP0,
+active strategies remain negative except for a statistically unusable
+selloff fee-aware result (+$0.344 on only five fills).
+
+The latency-aware crash run selected the alpha threshold by maximizing the
+worst inner-fold PnL across baseline and 150+150 ms execution. Its outer
+holdout remained +$0.202 at 50+50 ms but fell to −$0.742 at 150+150 ms; no
+tested threshold survived that larger delay.
 
 ## Setup
 
-* **Data.** Binance USD-M BTCUSDT futures with tick-by-tick L1 and every
-  trade (`data.md`). The calm window is 30 Mar 2024, 08–12 UTC. The crash
-  window is 5 Mar 2024, 13–17 UTC.
+* **Data.** Five Binance USD-M BTCUSDT futures windows with tick-by-tick L1
+  and every trade (`data.md`): calm, crash, rally, volatile and selloff.
 * **Protocol.**
   1. Split each window in time: first 2 h in-sample, last 2 h out-of-sample.
-  2. Calibrate σ, A, k, Hawkes and the fair-value model on in-sample data
-     only.
-  3. Choose γ for AS and GLFT on in-sample data only: best net PnL among
+  2. Under `--nested`, split the training half again: calibrate σ, A, k,
+     Hawkes and fair-value candidates on the first inner fold.
+  3. Choose the fair-value horizon, γ and alpha gates on the later inner fold:
+     γ is the best net PnL among
      settings with at least 100 fills/h, chosen separately per fee tier.
-  4. Run every strategy once out-of-sample, with frozen parameters.
+  4. Refit the selected model form on the full training half, then run every
+     strategy once out-of-sample with frozen parameters.
 * **Cross-regime test.** Calibrate and tune on the whole calm window, then
   trade the whole crash window unchanged.
 * **Execution.** 0.001 BTC per quote, position limit 0.01 BTC.
@@ -39,6 +67,10 @@ Strategies:
 | GLFT | Guéant–Lehalle–Fernandez-Tapia, calibrated σ, A, k |
 | GLFT+Hawkes+FV | GLFT around a fitted fair value, widened by Hawkes intensity, one-sided in bursts |
 | GLFT+HFV fee-aware | the above, but drops a side whose edge cannot cover the maker fee |
+| AdaptiveGLFT | GLFT with live-vol scaling, asymmetric Hawkes, toxicity and queue-pressure widening |
+| AdaptiveGLFT fee-floor | moves quotes beyond fee plus margin instead of simply stopping |
+| AdaptiveGLFT alpha-gated | pauses the side exposed to a validated short-horizon prediction |
+| AdaptiveGLFT alpha-gated fee-floor | combines adverse-side pause and fee floor |
 
 ## Calibration
 
@@ -132,8 +164,9 @@ model (GLFT+Hawkes+FV) except in the last row.
      * GLFT's break-even maker fee is ≈ 0 bp. It roughly breaks even at
        VIP9's 0 bp maker fee and profits only with a rebate.
    * Calm-calibrated GLFT in the crash: +$0.69, interval [+0.09, +1.38].
-   * The edge is gone at a 100 ms round trip and at a 500 ms requote limit.
-     That is the signature of an edge that belongs to fast participants.
+   * The original enhanced model lost at 100 ms round trip. The later
+     alpha-gated candidate remained positive at 50+50 ms in the crash but
+     lost at 150+150 ms. This remains an edge for fast participants only.
 4. **Hawkes and fair value help in calm markets, and in a regime break they
    act as a brake.**
    * In calm data they cut the loss by about a fifth against plain GLFT
@@ -156,7 +189,7 @@ model (GLFT+Hawkes+FV) except in the last row.
 
 ### Limits of this evidence
 
-* Two 4-hour windows from one venue and one symbol.
+* Five 4-hour windows from one venue, one symbol and one historical month.
 * About 120 one-minute observations per out-of-sample run. The bootstrap
   intervals are honest about that, and several positive results sit within
   noise of zero.

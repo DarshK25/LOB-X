@@ -30,7 +30,7 @@ NaN and infinity are sent as `null`. Paths are confined to their directories.
 
 | Method | Path | Body / result |
 |---|---|---|
-| POST | `/sim/start` | `{"symbol": "BTCUSDT", "fee": "spot_vip0", "capital_usd": 10000, "warmup_s": 120, "record": true}` → state; 409 if one is running |
+| POST | `/sim/start` | `{"symbol": "BTCUSDT", "market": "futures", "fee": "mm_rebate", "capital_usd": 10000, "warmup_s": 120, "record": true}` → state; `market` is `spot` or `futures`; 409 if one is running |
 | POST | `/sim/stop` | state (the recording is closed with a summary line) |
 | GET | `/sim/state` | state |
 | WS | `/ws/sim` | state at 2 Hz |

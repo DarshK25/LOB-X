@@ -10,6 +10,9 @@ Parquet:
 |---|---|---|---|---|---|
 | `calm` | 2024-03-30 08:00–12:00 | 1,135,887 | 84,013 | 69,873–70,255 | 5.8 MB |
 | `crash` | 2024-03-05 13:00–17:00 | 7,402,248 | 1,493,487 | 64,537–69,350 | 39.4 MB |
+| `rally_feb` | 2024-02-28 12:00–16:00 | 10,413,512 | 864,785 | 58,941–61,437 | fetched locally |
+| `volatile_mar14` | 2024-03-14 06:00–10:00 | 2,790,214 | 229,300 | 73,153–73,881 | fetched locally |
+| `selloff_mar19` | 2024-03-19 00:00–04:00 | 4,856,368 | 688,869 | 64,893–68,179 | fetched locally |
 
 * **Book.** `bookTicker`: every change of the best bid or ask, with its size,
   tick by tick (L1).
@@ -17,13 +20,13 @@ Parquet:
   side.
 
 The crash window covers the 5 March 2024 sell-off (69.35k to 64.5k inside the
-window).
-Volume in it is 21 times the calm window's. Together the two windows bracket
-the regimes a market maker has to survive.
+window). The five windows provide calm, rally, volatile, crash and selloff
+conditions, but remain only 20 hours from one symbol, venue and month.
 
 ```bash
-python scripts/fetch_history.py                                   # rebuild both windows
+python scripts/fetch_history.py                                   # rebuild default windows
 python scripts/fetch_history.py --window 2024-03-02 00:00 04:00 --label calm2
+python scripts/fetch_history.py --range 2024-03-01 00:00 2024-03-03 00:00 --label multi_day
 ```
 
 The script streams each daily zip, keeps only the requested hours and writes

@@ -13,45 +13,82 @@ Everything is paper trading. No order is ever sent to an exchange.
 
 ## Headline result
 
-On real Binance BTCUSDT futures data (tick-by-tick L1 plus every trade, one
-calm and one crash window):
+On five real four-hour Binance BTCUSDT futures windows (tick-by-tick L1 plus
+every trade; calm, crash, rally, volatile and selloff):
 
 * **Joining the touch loses money at every fee tier**, including the 0.5 bp
   market-maker rebate. Adverse selection over 5 s (0.5–0.8 bp) is far larger
   than a one-tick spread (0.014 bp).
-* **Calibrated GLFT/AS quoting loses 3.7–75 times less than touch-quoting.** At
-  the rebate tier it is profitable out-of-sample in the crash:
+* **Calibrated GLFT/AS quoting loses far less than touch-quoting.** At the
+  rebate tier plain GLFT is profitable out-of-sample in the crash:
   * GLFT +$4.6, 95% CI [−0.06, +8.6];
   * AS +$1.2, 95% CI [+0.04, +2.3].
-* **That edge disappears at a 100 ms round trip.** Latency matters more than
-  model choice.
+* **The adaptive alpha-gated GLFT is positive in three outer holdouts** at the
+  rebate tier: calm +$0.026, crash +$0.135 and selloff +$0.437. The selloff
+  95% bootstrap CI is [+$0.054, +$1.067], but other regimes are negative, so
+  this is not yet a universal or deployable winner.
+* **Latency bounds the edge.** The crash candidate remains positive at a
+  50+50 ms stress (+$0.202) but loses at 150+150 ms (−$0.742).
 * **A naive fill model is the biggest error source.** Assuming we are first in
   the queue turns touch-quoting's −$2.9 into +$54 on the same data.
+* **Ordinary VIP0 profitability is not established.** One selloff result was
+  +$0.344 on only five fills with a confidence interval spanning large losses;
+  it is rejected as insufficient evidence.
 
 Details, tables and limits: [`docs/research.md`](docs/research.md).
 
 ## What is in here
 
-```
-Binance WS (depth diffs, trades) ──► collector ──► local L2 book ──► Parquet (data/raw)
-                                           │                    └──► C++ book mirror (optional)
-                                           ▼
-Binance Vision archive ──► fetch_history ──► data/history (L1 + trades, checksummed)
-                                           │
-                 ┌─────────────────────────┴───────────────────────────┐
-                 ▼                                                     ▼
-       FeatureEngine: σ (USD/√s), Hawkes λ buy/sell, flow, imbalance   (same code live and historical)
-                 │
-                 ▼
-       Strategies: NoTrade · FixedSpread · InventorySkew · AS · GLFT · GLFT+Hawkes+FV · fee-aware
-                 │  one SimAccount each, same events
-                 ▼
-       MarketSimulator: latency, cancel-in-flight, post-only, probabilistic queue, fees, limits
-                 │
-                 ├──► backtest/research: calibrate → tune γ in-sample → out-of-sample → bootstrap → stress
-                 └──► live paper trading (terminal or web) ──► session recorder ──► exact replay
+```mermaid
+flowchart TB
+    BV[Binance Vision archives<br/>USD-M bookTicker + aggTrades]
+    WS[Binance spot/futures WebSockets<br/>depth diffs + trades]
+    FETCH[fetch_history<br/>ZIP validation + SHA-256 manifest]
+    COL[Collector<br/>snapshot/diff continuity + gap resync]
+    L2[Local L2 book]
+    RAW[Rotating Parquet captures]
+    HIST[Verified historical L1 + trades]
+    CPP[C++ price-time order book<br/>API, mirror and benchmarks only]
 
-FastAPI: research results, sessions + replay, live sim (/ws/sim), C++ order book ──► React frontend
+    BV --> FETCH --> HIST
+    WS --> COL --> L2
+    L2 --> RAW
+    L2 -. optional mirror .-> CPP
+
+    HIST --> EVENTS[Chronological market events<br/>trades before book at equal timestamps]
+    L2 --> EVENTS
+    EVENTS --> FE[FeatureEngine<br/>EWMA σ · buy/sell Hawkes λ<br/>L1 imbalance · signed volume · VPIN-lite toxicity]
+
+    CAL[Past-only calibration<br/>σ · arrival A/k · Hawkes MLE<br/>ridge fair value + horizon gate]
+    FE --> CAL
+    CAL --> MODELS[Quote models]
+    FE --> MODELS
+
+    MODELS --> CTRL[Controls<br/>NoTrade · FixedSpread · InventorySkew]
+    MODELS --> AS[Avellaneda–Stoikov<br/>finite-horizon HJB closed form]
+    MODELS --> GLFT[GLFT<br/>infinite-horizon HJB asymptotic]
+    GLFT --> ENH[Enhanced GLFT<br/>Hawkes widening/pause · fair value · fee-aware]
+    ENH --> ADAPT[Adaptive GLFT<br/>live-vol scaling · asymmetric Hawkes<br/>toxicity · queue pressure · fee floor]
+    ADAPT --> GATE[Alpha-gated variants<br/>pause predicted adverse side<br/>preserve inventory-reducing quote]
+
+    CTRL --> SIM[MarketSimulator<br/>latency · post-only · cancel in flight<br/>probabilistic queue · fees · limits · taker flatten]
+    AS --> SIM
+    GLFT --> SIM
+    ENH --> SIM
+    ADAPT --> SIM
+    GATE --> SIM
+
+    SIM --> RESEARCH[Nested chronological research<br/>calibrate → tune γ/gates → final refit<br/>frozen OOS → block bootstrap/DSR → stress]
+    SIM --> LIVE[Live paper trading<br/>capital sizing + online Hawkes refits]
+    LIVE --> TAPE[Ordered gzip session tape<br/>market · calibration · orders · fills · refits]
+    TAPE --> REPLAY[Deterministic replay<br/>fill-by-fill equality or counterfactual fees]
+
+    RESEARCH --> API[FastAPI]
+    LIVE --> API
+    REPLAY --> API
+    CPP --> API
+    API --> UI[React frontend<br/>Live Sim · Research · Sessions]
+    LIVE --> TUI[Rich terminal dashboard]
 ```
 
 | Component | Where | Notes |
@@ -77,7 +114,7 @@ venv\Scripts\activate                     # Linux/macOS: source venv/bin/activat
 pip install -r requirements.txt -r requirements-dev.txt
 
 python scripts/setup_cpp_build.py --tests --bench   # C++ extension, tests, benchmark
-python scripts/fetch_history.py                     # ~45 MB of real BTCUSDT data
+python scripts/fetch_history.py                     # download verified BTCUSDT windows
 python scripts/run_research.py --cross calm crash   # full study, ~20 min, writes results/research/
 python -m pytest backend/python/tests -q
 ```
@@ -90,8 +127,8 @@ falls back to Zig's bundled clang from pip, so no Visual Studio is needed.
 ```bash
 python scripts/lobx_cli.py            # interactive; or pass a command:
 python scripts/lobx_cli.py live       # candles, L2 book, tape, Hawkes regime gauge (MLE refit every 60 s)
-python scripts/lobx_cli.py sim BTCUSDT spot_vip0 cap=10000 120 600
-                                      # 120 s live calibration, then 10 min paper trading, 7 accounts of $10k
+python scripts/lobx_cli.py sim BTCUSDT futures mm_rebate cap=10000 120 600
+                                      # 120 s warm-up, then paper trading, 11 accounts of $10k
 python scripts/lobx_cli.py sessions             # recorded sessions in data/sessions
 python scripts/lobx_cli.py replay               # rerun the latest session, check every fill matches
 python scripts/lobx_cli.py replay mm_rebate     # same market data, rebate fee tier
@@ -100,13 +137,13 @@ python scripts/lobx_cli.py quote BTCUSDT 3      # AS and GLFT quotes for +3 lots
 python scripts/lobx_cli.py scan 20              # futures spread vs maker fee
 ```
 
-`sim` runs on the live Binance spot feed. It records the first `WARMUP_S`
+`sim` runs on the selected live Binance spot or USD-M futures feed. It records the first `WARMUP_S`
 seconds, calibrates σ, A, k, Hawkes and fair value from them, then
 paper-trades every strategy in its own account. Hawkes is refit every 60 s.
 Each account has `cap=` USD (default 10,000): one quote is 10% of it and
 inventory is capped at 100%, so results read as a return on capital.
 
-Every session is written to `data/sessions/<SYM>_<utc>.jsonl.gz` in arrival
+Every session is written to `data/sessions/<SYM>_<market>_<utc>.jsonl.gz` in arrival
 order: each top-of-book change and trade (warm-up included), the calibration,
 every Hawkes refit, and every order, cancel, post-only reject and fill of
 every account. The simulator is deterministic, so `replay` reproduces the
@@ -142,8 +179,8 @@ VIP0 maker fee is 10 bp, so a maker pays roughly 10,000 times what it can
 earn from the spread on every fill. Larger size does not help: it scales the
 loss. HFT market makers make money on high volume only with rebate fee tiers,
 low latency and edge on adverse selection. The research results show where a
-positive result does appear (rebate tier, volatile window) and that it is
-gone at 100 ms latency. Replaying a recorded live session under `mm_rebate`
+positive results appear (only under the rebate scenario in selected windows)
+and where latency removes them. Replaying a recorded live session under `mm_rebate`
 shows how much of the loss is fees and how much is adverse selection.
 
 ## Design decisions
@@ -162,6 +199,32 @@ shows how much of the loss is fees and how much is adverse selection.
 * **No database.** Inputs are Parquet and outputs are JSON and Markdown,
   reproducible from a manifest with SHA-256 hashes. An optional Postgres
   writer exists for long live captures (`docker-compose.yml`).
+
+## HJB in this repository
+
+Hamilton–Jacobi–Bellman (HJB) is continuous-time dynamic programming. Start
+with a value function for future utility as a function of cash, inventory,
+mid-price and time. Over the next tiny interval the mid can diffuse, resting
+orders can fill as random jumps, and the market maker can choose new bid and
+ask depths. HJB states that the current value must equal the best expected
+value after accounting for those possible next events.
+
+Avellaneda–Stoikov assumes Brownian mid-price risk, exponential fill
+intensities and a finite horizon. Its solution gives a reservation price
+
+`r = S - q γ σ² τ`
+
+and a spread with a risk term and a liquidity term. GLFT uses the same
+exponential arrival idea, `λ(Δ) = A exp(-kΔ)`, but derives an
+infinite-horizon asymptotic solution better suited to a 24/7 market. LOB-X
+uses these analytical closed forms; it does **not** numerically solve an HJB
+PDE.
+
+HJB optimizes decisions under its assumptions—it does not create predictive
+edge. If σ has the wrong units, A/k do not match the venue, fees exceed edge,
+or queue position is optimistic, mathematically correct quotes can still
+lose. That is why the execution simulator and chronological validation are
+as important as the formulas.
 
 ## Repository
 
@@ -183,7 +246,7 @@ on probability, stochastic calculus and the model derivations.
 
 ## Limits
 
-Two 4-hour windows from one venue. L1 history, so the queue estimate for quotes
+Five 4-hour windows from one venue and one historical month. L1 history, so the queue estimate for quotes
 behind the touch is pessimistic. Constant latency and no self-impact. The C++
 book is single-threaded and is not on the research path. The web API runs one
 live session at a time and has no authentication: it is meant for localhost.
