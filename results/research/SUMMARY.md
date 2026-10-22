@@ -73,17 +73,17 @@ Gamma chosen in-sample (best net PnL with >= 100 fills/h): AS 0.003, GLFT 3 (1/U
 | GLFT+HFV fee-aware | +0.719 | [-0.57, +2.12] | +75.8 | 0.856 | 419 | +0.01338 | +2.63 | - | 1.00 |
 | AdaptiveGLFT | +0.331 | [-0.04, +0.85] | +87.2 | 0.117 | 80 | +0.02032 | +3.55 | -0.19 | 1.00 |
 | AdaptiveGLFT fee-floor | +0.372 | [-0.07, +0.88] | +93.7 | 0.151 | 78 | +0.02165 | +3.60 | -0.15 | 1.00 |
-| AdaptiveGLFT alpha-gated | +0.106 | [-0.12, +0.43] | +42.1 | 0.112 | 43 | +0.02178 | +3.90 | -0.32 | 1.00 |
-| AdaptiveGLFT alpha-gated fee-floor | +0.182 | [-0.23, +0.65] | +48.4 | 0.197 | 51 | +0.02252 | +3.81 | -0.23 | 1.00 |
+| AdaptiveGLFT alpha-gated | +0.135 | [-0.14, +0.42] | +57.0 | 0.112 | 41 | +0.02230 | +3.95 | -0.26 | 1.00 |
+| AdaptiveGLFT alpha-gated fee-floor | +0.263 | [-0.11, +0.64] | +86.2 | 0.104 | 40 | +0.02444 | +3.93 | -0.01 | 1.00 |
 
 Stress tests (GLFT+Hawkes+FV unless named):
 
 | Variant | Net PnL $ | Fills/h | Adverse 5s bp |
 |---|---|---|---|
-| latency 50+50ms | +0.192 | 75 | +3.09 |
-| latency 150+150ms | -0.711 | 93 | +3.18 |
-| optimistic queue | +0.250 | 44 | +3.55 |
-| requote 500ms | -0.006 | 27 | +4.26 |
+| latency 50+50ms | +0.202 | 69 | +3.04 |
+| latency 150+150ms | -0.742 | 85 | +3.34 |
+| optimistic queue | +0.279 | 42 | +3.58 |
+| requote 500ms | +0.023 | 27 | +4.31 |
 | FixedSpread optimistic queue | +106.004 | 36575 | +0.31 |
 
 ## cross calm 2024-03-30 08:00-12:00 -> crash 2024-03-05 13:00-17:00

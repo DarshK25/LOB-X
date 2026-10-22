@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -161,7 +162,7 @@ def tune_gamma(data: MarketData, calib: dict, fee: str) -> dict:
 
 
 def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> dict:
-    """Tune only the adverse-side alpha gate on the chronological inner fold."""
+    """Tune the adverse-side gate for worst-case base/150 ms inner-fold PnL."""
     prof = FEE_PROFILES[fee]
     A, k = calib["arrival"]["A"], calib["arrival"]["k"]
     fv = calib["fair_value"]
@@ -178,7 +179,11 @@ def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> di
                 queue_widen=0.25, fee_floor=floor, edge_margin_bps=0.2,
                 alpha_pause_sigma=threshold,
             )
-            accounts.append(SimAccount(strategy, cfg, name=f"{'floor' if floor else 'base'} {threshold:g}"))
+            prefix = "floor" if floor else "base"
+            accounts.append(SimAccount(strategy, cfg, name=f"{prefix} {threshold:g}"))
+            latency_cfg = exec_config(data, fee, feed_latency_ms=150, order_latency_ms=150)
+            accounts.append(SimAccount(deepcopy(strategy), latency_cfg,
+                                       name=f"{prefix} {threshold:g} latency150"))
     run = run_backtest(data, accounts, make_features(data, calib))
     rows = run.by_name()
 
@@ -187,8 +192,12 @@ def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> di
                       for threshold in ALPHA_PAUSE_GRID]
         active = [item for item in candidates if item[1]["fills_per_hour"] >= 25.0]
         pool = active or candidates
-        return max(pool, key=lambda item: (item[1]["net_pnl"],
-                                            item[1]["fill_expectancy_5000ms"]))[0]
+        return max(pool, key=lambda item: (
+            min(item[1]["net_pnl"],
+                rows[f"{prefix} {item[0]:g} latency150"]["net_pnl"]),
+            item[1]["net_pnl"],
+            item[1]["fill_expectancy_5000ms"],
+        ))[0]
 
     return {
         "base": best("base"),
@@ -196,6 +205,8 @@ def tune_alpha_gate(data: MarketData, calib: dict, fee: str, gamma: float) -> di
         "grid": {
             prefix: [{"threshold_sigma": threshold,
                       "net_pnl": rows[f"{prefix} {threshold:g}"]["net_pnl"],
+                      "latency150_net_pnl":
+                          rows[f"{prefix} {threshold:g} latency150"]["net_pnl"],
                       "fills": rows[f"{prefix} {threshold:g}"]["fills"]}
                      for threshold in ALPHA_PAUSE_GRID]
             for prefix in ("base", "floor")
