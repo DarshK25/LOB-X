@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from lobx.analytics.calibration import calibrate, fair_value_r2, fit_sigma
-from lobx.analytics.performance import block_bootstrap
+from lobx.analytics.performance import block_bootstrap, deflated_sharpe
 from lobx.backtest.data import MarketData
 from lobx.backtest.engine import run_backtest
 from lobx.execution.fees import FEE_PROFILES
@@ -132,12 +132,22 @@ def _clean(report: dict) -> dict:
 
 
 def evaluate_window(data: MarketData, fees: tuple[str, ...] = ("vip0", "mm_rebate"),
-                    log=print) -> dict:
-    """Calibrate and tune on the first half, evaluate on the second half."""
+                    log=print, nested: bool = False) -> dict:
+    """Evaluate one chronological holdout.
+
+    With ``nested=True`` the outer training half is itself split: model
+    calibration uses its first half and gamma selection uses its second half.
+    The final model is then refit on all outer training data before the unseen
+    outer half is evaluated.  This prevents gamma from being selected on the
+    same observations that estimated sigma, A, k, Hawkes and fair value.
+    """
     ins, oos = data.split(0.5)
     log(f"[{data.name}] {data.hours:.1f} h, {len(data.book_ts):,} book updates, "
         f"{len(data.trade_ts):,} trades, tick {data.tick_size}")
-    return evaluate(ins, oos, data.name, fees, log)
+    if not nested:
+        return evaluate(ins, oos, data.name, fees, log)
+    calibration_data, tuning_data = ins.split(0.5)
+    return evaluate(ins, oos, data.name, fees, log, calibration_data, tuning_data)
 
 
 def cross_regime(train: MarketData, test: MarketData,
@@ -149,10 +159,18 @@ def cross_regime(train: MarketData, test: MarketData,
 
 
 def evaluate(ins: MarketData, oos: MarketData, name: str,
-             fees: tuple[str, ...] = ("vip0", "mm_rebate"), log=print) -> dict:
+             fees: tuple[str, ...] = ("vip0", "mm_rebate"), log=print,
+             calibration_data: MarketData | None = None,
+             tuning_data: MarketData | None = None) -> dict:
     t_start = time.time()
     data = oos
-    calib = calibrate(ins)
+    selection_data = calibration_data or ins
+    tuning_data = tuning_data or ins
+    selection_calib = calibrate(selection_data)
+    # Refit on every observation available before OOS after hyperparameters
+    # have been selected.  This is standard nested time-series validation.
+    nested = calibration_data is not None or tuning_data is not ins
+    calib = calibrate(ins) if nested else selection_calib
     calib["fair_value"]["r2_out_of_sample"] = fair_value_r2(oos, calib)
     log(f"  calibration: sigma={calib['sigma']:.3f} USD/sqrt(s)  A={calib['arrival']['A']:.2f}/s"
         f"  k={calib['arrival']['k']:.2f}/USD (R2 {calib['arrival']['r2']:.2f})  Hawkes n="
@@ -163,9 +181,15 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
     result: dict = {"window": name, "venue": oos.venue, "hours": ins.hours + oos.hours,
                     "in_sample": [ins.start, ins.end], "out_of_sample": [oos.start, oos.end],
                     "oos_hours": oos.hours, "oos_sigma": float(fit_sigma(oos)),
+                    "validation": {
+                        "method": "nested chronological" if nested else "single chronological",
+                        "calibration": [selection_data.start, selection_data.end],
+                        "tuning": [tuning_data.start, tuning_data.end],
+                        "final_refit": [ins.start, ins.end],
+                    },
                     "calibration": calib, "fees": {}}
     for fee in fees:
-        tuned = tune_gamma(ins, calib, fee)
+        tuned = tune_gamma(tuning_data, selection_calib, fee)
         log(f"  [{fee}] tuned gamma: AS={tuned['AS']:g}  GLFT={tuned['GLFT']:g} "
             f"({tuned['seconds']:.0f}s)")
         prof = FEE_PROFILES[fee]
@@ -191,6 +215,11 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
         main = [r for r in reports if not r["strategy"].startswith("stress")]
         boot = block_bootstrap({r["strategy"]: r["_minute_pnl"] for r in main},
                                baseline="FixedSpread")
+        # Eleven gamma values for each of two model families were inspected.
+        # DSR is diagnostic: OOS remains the actual promotion gate.
+        for r in main:
+            r["deflated_sharpe_probability"] = deflated_sharpe(
+                r["_minute_pnl"], len(GAMMA_GRID) * 2)
         log(f"  [{fee}] OOS {oos.hours:.1f} h in {run.seconds:.0f}s")
         for r in main:
             log(f"    {r['strategy']:<20} net {r['net_pnl']:+9.3f}  fills {r['fills']:6d}  "
@@ -206,6 +235,53 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
         }
     result["seconds"] = time.time() - t_start
     return result
+
+
+def walk_forward_slices(data: MarketData, train_s: float, test_s: float,
+                        step_s: float | None = None) -> list[tuple[MarketData, MarketData]]:
+    """Rolling, past-only train/test slices; never uses an expanding future."""
+    if min(train_s, test_s) <= 0:
+        raise ValueError("train_s and test_s must be positive")
+    step_ms = int((step_s or test_s) * 1000)
+    train_ms, test_ms = int(train_s * 1000), int(test_s * 1000)
+    if step_ms <= 0:
+        raise ValueError("step_s must be positive")
+    folds = []
+    test_start = data.start + train_ms
+    i = 0
+    # Recorded windows conventionally end just before their exclusive wall
+    # clock boundary (e.g. the final 100 ms book update is at 59.900 s).
+    while test_start + test_ms <= data.end + 1_000:
+        train = data.slice(test_start - train_ms, test_start,
+                           f"{data.name}:wf{i}:train")
+        test = data.slice(test_start, test_start + test_ms,
+                          f"{data.name}:wf{i}:test")
+        if len(train.book_ts) and len(test.book_ts):
+            folds.append((train, test))
+        test_start += step_ms
+        i += 1
+    return folds
+
+
+def walk_forward(data: MarketData, train_s: float, test_s: float,
+                 fees: tuple[str, ...] = ("vip0",), step_s: float | None = None,
+                 log=print) -> dict:
+    """Nested rolling evaluation.  Every fold is an independent OOS result."""
+    folds = walk_forward_slices(data, train_s, test_s, step_s)
+    if not folds:
+        raise ValueError("data is shorter than train_s + test_s")
+    results = []
+    for i, (train, test) in enumerate(folds):
+        calibration_data, tuning_data = train.split(0.5)
+        results.append(evaluate(train, test, f"{data.name}:walk-forward {i}", fees, log,
+                                calibration_data, tuning_data))
+    return {
+        "window": f"walk-forward {data.name}",
+        "venue": data.venue,
+        "validation": {"method": "nested rolling", "train_s": train_s, "test_s": test_s,
+                       "step_s": step_s or test_s, "folds": len(results)},
+        "folds": results,
+    }
 
 
 def save_result(result: dict, out_dir: str | Path) -> Path:

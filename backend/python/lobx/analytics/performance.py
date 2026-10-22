@@ -15,6 +15,7 @@ bootstrap interval.
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 
 import numpy as np
 
@@ -54,6 +55,81 @@ def max_drawdown(equity: list[float]) -> float:
     return float(np.max(peak - e))
 
 
+def probabilistic_sharpe(pnl: np.ndarray, benchmark: float = 0.0) -> float:
+    """Probability that the (non-annualised) Sharpe exceeds ``benchmark``.
+
+    This is the Bailey--Lopez de Prado PSR, including the observed skew and
+    kurtosis.  Unlike the headline annualised Sharpe, it explicitly reflects
+    the number and non-normality of the return observations.
+    """
+    x = np.asarray(pnl, dtype=float)
+    n = len(x)
+    if n < 4:
+        return 0.5
+    sd = float(x.std(ddof=1))
+    if sd <= 1e-12:
+        return 1.0 if x.mean() > benchmark else 0.0 if x.mean() < benchmark else 0.5
+    z = (x - x.mean()) / sd
+    sr = float(x.mean() / sd)
+    skew = float(np.mean(z ** 3))
+    kurt = float(np.mean(z ** 4))
+    denom = max(1e-12, 1.0 - skew * sr + (kurt - 1.0) * sr * sr / 4.0)
+    score = (sr - benchmark) * math.sqrt(n - 1.0) / math.sqrt(denom)
+    return float(NormalDist().cdf(score))
+
+
+def deflated_sharpe(pnl: np.ndarray, n_trials: int) -> float:
+    """PSR after penalising the number of tried configurations.
+
+    Under a zero-Sharpe null, one observed Sharpe has standard error
+    ``1/sqrt(n-1)``.  The benchmark is the expected maximum of ``n_trials``
+    such Sharpes (Bailey & Lopez de Prado's approximation).  This is a
+    conservative multiple-testing diagnostic, not a substitute for OOS data.
+    """
+    x = np.asarray(pnl, dtype=float)
+    if len(x) < 4 or n_trials <= 1:
+        return probabilistic_sharpe(x)
+    normal = NormalDist()
+    gamma = 0.5772156649015329  # Euler--Mascheroni constant
+    n = float(n_trials)
+    expected_max_z = (1.0 - gamma) * normal.inv_cdf(1.0 - 1.0 / n) + \
+        gamma * normal.inv_cdf(1.0 - 1.0 / (n * math.e))
+    benchmark = expected_max_z / math.sqrt(len(x) - 1.0)
+    return probabilistic_sharpe(x, benchmark)
+
+
+def inventory_episode_report(sample_times: list[int], equity: list[float],
+                             positions: list[float], eps: float = 1e-12) -> dict:
+    """PnL and duration of completed flat-to-flat inventory episodes."""
+    n = min(len(sample_times), len(equity), len(positions))
+    if n < 2:
+        return {"inventory_episodes": 0, "closed_inventory_episodes": 0,
+                "inventory_episode_win_rate": 0.0, "inventory_episode_expectancy": 0.0,
+                "mean_time_to_flat_s": 0.0, "max_time_to_flat_s": 0.0}
+    open_at: int | None = None
+    equity_base = 0
+    pnls: list[float] = []
+    durations: list[float] = []
+    for i in range(n):
+        nonflat = abs(positions[i]) > eps
+        if open_at is None and nonflat:
+            open_at = i
+            equity_base = max(0, i - 1)
+        elif open_at is not None and not nonflat:
+            pnls.append(float(equity[i] - equity[equity_base]))
+            durations.append((sample_times[i] - sample_times[open_at]) / 1000.0)
+            open_at = None
+    episodes = len(pnls) + (1 if open_at is not None else 0)
+    return {
+        "inventory_episodes": episodes,
+        "closed_inventory_episodes": len(pnls),
+        "inventory_episode_win_rate": float(np.mean(np.asarray(pnls) > 0)) if pnls else 0.0,
+        "inventory_episode_expectancy": float(np.mean(pnls)) if pnls else 0.0,
+        "mean_time_to_flat_s": float(np.mean(durations)) if durations else 0.0,
+        "max_time_to_flat_s": float(max(durations, default=0.0)),
+    }
+
+
 def account_report(acc: SimAccount, sample_times: list[int], mid_ts: np.ndarray,
                    mids: np.ndarray, horizons_ms: tuple[int, ...] = (1_000, 5_000, 30_000),
                    fee_aware: bool = False) -> dict:
@@ -90,8 +166,16 @@ def account_report(acc: SimAccount, sample_times: list[int], mid_ts: np.ndarray,
             idx = np.searchsorted(mid_ts, ts + h, side="right") - 1
             idx = np.clip(idx, 0, len(mids) - 1)
             mo = s * (mids[idx] - px) * q
+            # Actual maker fee on each fill (negative under a rebate).  This
+            # asks whether that fill was worth more than its transaction cost
+            # at horizon h, independently of later inventory management.
+            fee = np.asarray([f[4] for f in maker], dtype=float)
+            net_mo = mo - fee
             report[f"markout_{h}ms"] = float(mo.sum())
             report[f"adverse_{h}ms"] = float((edge - mo).sum())
+            report[f"net_markout_{h}ms"] = float(net_mo.sum())
+            report[f"fill_win_rate_{h}ms"] = float(np.mean(net_mo > 0))
+            report[f"fill_expectancy_{h}ms"] = float(np.mean(net_mo))
         h_ref = 5_000 if 5_000 in horizons_ms else horizons_ms[0]
         report["adverse_selection_cost"] = report[f"adverse_{h_ref}ms"]
         report["adverse_bps"] = report["adverse_selection_cost"] / max(
@@ -103,15 +187,20 @@ def account_report(acc: SimAccount, sample_times: list[int], mid_ts: np.ndarray,
         for h in horizons_ms:
             report[f"markout_{h}ms"] = 0.0
             report[f"adverse_{h}ms"] = 0.0
+            report[f"net_markout_{h}ms"] = 0.0
+            report[f"fill_win_rate_{h}ms"] = 0.0
+            report[f"fill_expectancy_{h}ms"] = 0.0
 
     pnl = minute_pnl(sample_times, acc.equity)
     hours = (sample_times[-1] - sample_times[0]) / 3_600_000 if len(sample_times) > 1 else 0.0
     report["sharpe"] = sharpe(pnl)
+    report["probabilistic_sharpe"] = probabilistic_sharpe(pnl)
     report["max_drawdown"] = max_drawdown(acc.equity)
     report["pnl_per_hour"] = net / hours if hours > 0 else 0.0
     report["fills_per_hour"] = len(maker) / hours if hours > 0 else 0.0
     report["max_abs_position"] = float(max((abs(p) for p in acc.positions), default=0.0))
     report["mean_abs_position"] = float(np.mean(np.abs(acc.positions))) if acc.positions else 0.0
+    report.update(inventory_episode_report(sample_times, acc.equity, acc.positions))
     maker_turnover = float(sum(f[2] * f[3] for f in maker))
     report["maker_turnover"] = maker_turnover
     # Fee level at which net PnL is zero; fills do not depend on the fee unless

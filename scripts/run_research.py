@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "backend" / "python"))
 
 from lobx.backtest.data import list_history, load_history  # noqa: E402
 from lobx.backtest.report import write_summary  # noqa: E402
-from lobx.backtest.research import cross_regime, evaluate_window, save_result  # noqa: E402
+from lobx.backtest.research import cross_regime, evaluate_window, save_result, walk_forward  # noqa: E402
 
 OUT = ROOT / "results" / "research"
 
@@ -32,6 +32,11 @@ def main() -> int:
     ap.add_argument("--window", action="append", help="history label (repeatable)")
     ap.add_argument("--cross", nargs=2, metavar=("TRAIN", "TEST"), help="cross-regime test")
     ap.add_argument("--fees", nargs="+", default=["vip0", "mm_rebate"])
+    ap.add_argument("--nested", action="store_true",
+                    help="separate calibration and gamma-selection periods inside the training half")
+    ap.add_argument("--walk-forward", nargs=2, type=float, metavar=("TRAIN_H", "TEST_H"),
+                    help="nested rolling folds (hours); saved under results/research/walk_forward")
+    ap.add_argument("--step-hours", type=float, help="walk-forward step (default TEST_H)")
     ap.add_argument("--summary-only", action="store_true", help="rebuild the markdown summary")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -43,8 +48,16 @@ def main() -> int:
             print("No history found. Run: python scripts/fetch_history.py")
             return 1
         for label in labels:
-            result = evaluate_window(load_history(label), tuple(args.fees))
-            print(f"saved {save_result(result, OUT)}")
+            data = load_history(label)
+            if args.walk_forward:
+                train_h, test_h = args.walk_forward
+                result = walk_forward(data, train_h * 3600, test_h * 3600, tuple(args.fees),
+                                      None if args.step_hours is None else args.step_hours * 3600)
+                target = OUT / "walk_forward"
+            else:
+                result = evaluate_window(data, tuple(args.fees), nested=args.nested)
+                target = OUT
+            print(f"saved {save_result(result, target)}")
         if args.cross:
             train, test = (load_history(x) for x in args.cross)
             result = cross_regime(train, test, tuple(args.fees))

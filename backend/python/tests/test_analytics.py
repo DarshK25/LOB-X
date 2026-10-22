@@ -6,12 +6,16 @@ from lobx.analytics.calibration import calibrate, fit_arrival
 from lobx.analytics.performance import (
     account_report,
     block_bootstrap,
+    deflated_sharpe,
+    inventory_episode_report,
     max_drawdown,
     minute_pnl,
+    probabilistic_sharpe,
     sharpe,
 )
 from lobx.backtest.data import MarketData
 from lobx.backtest.engine import run_backtest
+from lobx.backtest.research import walk_forward_slices
 from lobx.execution.simulator import BID, ExecutionConfig, SimAccount
 from lobx.strategy import FixedSpreadStrategy, NoTradeStrategy
 from lobx.strategy.features import FeatureEngine
@@ -73,6 +77,43 @@ def test_attribution_edge_minus_adverse_equals_markout():
     assert rep["edge"] == pytest.approx(0.05)
     assert rep["markout_5000ms"] == pytest.approx(99.0 - 99.95)
     assert rep["adverse_5000ms"] == pytest.approx(rep["edge"] - rep["markout_5000ms"])
+    assert rep["fill_win_rate_5000ms"] == 0.0
+    assert rep["fill_expectancy_5000ms"] == pytest.approx(99.0 - 99.95)
+
+
+def test_fill_win_rate_is_net_of_actual_maker_fee():
+    cfg = ExecutionConfig(tick_size=0.1, maker_fee=0.001)
+    acc = SimAccount(FixedSpreadStrategy(0.05, 1.0), cfg)
+    acc._mid = 100.0
+    acc._apply_fill(1_000, BID, 99.95, 1.0, True)
+    acc.equity = [0.0, 0.0]
+    acc.positions = [0.0, 1.0]
+    rep = account_report(acc, [0, 6_000], np.array([0, 6_000]), np.array([100.0, 100.0]))
+    assert rep["markout_5000ms"] == pytest.approx(0.05)
+    assert rep["maker_fees"] == pytest.approx(0.09995)
+    assert rep["net_markout_5000ms"] == pytest.approx(-0.04995)
+    assert rep["fill_win_rate_5000ms"] == 0.0
+
+
+def test_inventory_episode_metrics_use_completed_flat_to_flat_cycles():
+    out = inventory_episode_report(
+        [0, 1_000, 2_000, 3_000, 4_000, 5_000],
+        [0.0, 0.0, 2.0, 3.0, 3.0, 2.0],
+        [0.0, 1.0, 1.0, 0.0, -1.0, 0.0],
+    )
+    assert out["inventory_episodes"] == 2
+    assert out["closed_inventory_episodes"] == 2
+    assert out["inventory_episode_win_rate"] == 0.5
+    assert out["inventory_episode_expectancy"] == pytest.approx(1.0)
+    assert out["mean_time_to_flat_s"] == pytest.approx(1.5)
+
+
+def test_probabilistic_and_deflated_sharpe_penalise_multiple_trials():
+    rng = np.random.default_rng(9)
+    pnl = rng.normal(0.1, 1.0, 500)
+    psr = probabilistic_sharpe(pnl)
+    assert 0.5 < psr < 1.0
+    assert deflated_sharpe(pnl, 100) < psr
 
 
 def test_arrival_fit_recovers_decay_on_synthetic_market():
@@ -97,3 +138,14 @@ def test_calibrate_and_backtest_end_to_end_on_synthetic_market():
     assert fixed["fills"] > 0
     assert fixed["net_pnl"] == pytest.approx(fixed["gross_pnl"])  # zero fees
     assert run.book_events == len(data.book_ts)
+
+
+def test_walk_forward_slices_are_strictly_past_only():
+    data = synthetic_market(seconds=1_200)
+    folds = walk_forward_slices(data, train_s=600, test_s=300, step_s=300)
+    assert len(folds) == 2
+    for train, test in folds:
+        assert train.end < test.start
+        assert train.hours == pytest.approx(600 / 3600, abs=1e-3)
+        assert test.hours == pytest.approx(300 / 3600, abs=1e-3)
+    assert folds[0][1].end < folds[1][1].start
