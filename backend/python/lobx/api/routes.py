@@ -13,11 +13,6 @@ _TIF = {"GTC": lobx_cpp.TimeInForce.GTC, "IOC": lobx_cpp.TimeInForce.IOC,
         "FOK": lobx_cpp.TimeInForce.FOK}
 
 
-@router.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
 @router.get("/book", response_model=BookSnapshot)
 def get_book(book: lobx_cpp.OrderBook = Depends(get_order_book)) -> BookSnapshot:
     return BookSnapshot(**snapshot(book))

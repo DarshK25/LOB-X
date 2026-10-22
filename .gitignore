@@ -85,3 +85,4 @@ Thumbs.db
 # ─── External References ──────────────────────────────────────────────────────
 # Third-party repositories cloned as implementation references (not dependencies)
 _reference/
+*.tsbuildinfo

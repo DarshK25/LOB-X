@@ -169,6 +169,7 @@ class LiveSimRunner:
             data = self._warmup_data()
             calib = await asyncio.to_thread(calibrate, data)
             self.start_trading(calib, float(data.mids[-1]))
+            self.error = None
             self._next_refit = time.monotonic() + self.refit_s
             logger.info("live calibration: sigma=%.4f A=%.3f k=%.3f", calib["sigma"],
                         calib["arrival"]["A"], calib["arrival"]["k"])
