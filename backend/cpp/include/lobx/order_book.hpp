@@ -62,12 +62,22 @@ private:
     // Asks: lowest price has priority → default (ascending) map.
     std::map<Price, PriceLevel> asks_;
 
-    // Fast lookup: order id → price (for O(log N) cancel).
-    std::unordered_map<OrderId, Price> order_index_;
+    // Order id -> location of the resting order: O(log L) level lookup plus
+    // O(1) erase from the level's list.
+    struct Location {
+        Price price;
+        Side side;
+        PriceLevel::Iterator it;
+    };
+    std::unordered_map<OrderId, Location> order_index_;
 
     /// Internal matching loop. Fills `aggressor` against `passive_side`.
     template <typename PassiveMap>
     std::vector<Trade> match(Order& aggressor, PassiveMap& passive_side);
+
+    /// Quantity the aggressor could execute right now (stops once it covers the order).
+    template <typename PassiveMap>
+    Quantity fillable_qty(const Order& aggressor, const PassiveMap& passive_side) const;
 
     void rest_order(Order order);
 };

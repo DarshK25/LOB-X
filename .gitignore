@@ -51,11 +51,21 @@ frontend/.env.production
 !.env.example
 
 # ─── Data / large files ───────────────────────────────────────────────────────
-# Keep data/raw/*.parquet for GitHub Actions automated collection
-# (tracked via Git LFS - see .gitattributes)
+# Market data is never committed: scripts/fetch_history.py rebuilds
+# data/history/ from Binance Vision and verifies it against manifest.json.
+data/cache/
+data/raw/
 data/processed/
 data/backtest/
 data/temp/
+data/sessions/
+data/*.log
+data/*.out
+data/*.err
+*.pdb
+backend/python/*.lib
+logs/
+*.parquet
 *.csv
 *.h5
 *.hdf5
@@ -68,5 +78,10 @@ papers/*.pdf
 Thumbs.db
 .idea/
 .vscode/
+.kiro/
 *.swp
 *.swo
+
+# ─── External References ──────────────────────────────────────────────────────
+# Third-party repositories cloned as implementation references (not dependencies)
+_reference/

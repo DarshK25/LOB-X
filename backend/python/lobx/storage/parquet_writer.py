@@ -11,7 +11,7 @@ Parquet is a columnar binary format built for analytical reads:
     * Zero-cost schema: pyarrow enforces types at write time so downstream
       pandas/numpy code doesn't have to cast.
     * Ecosystem compatibility: pandas, DuckDB, Polars, Spark all read Parquet
-      natively — useful when backtesting Phase 2–3 code outside Python.
+      natively — useful when analysing captures outside Python.
 
 File rotation strategy (UTC-date-partitioned)
 ---------------------------------------------

@@ -22,21 +22,20 @@ std::vector<Trade> OrderBook::match(Order& aggressor, PassiveMap& passive_side) 
 
         // Fill against each resting order in the level (FIFO).
         while (aggressor.qty_remaining > 0 && !level.empty()) {
-            auto& passive = level.front().value().get();
-            Quantity fill_qty = std::min(aggressor.qty_remaining, passive.qty_remaining);
-            Price    fill_prc = passive_price;  // passive price wins
+            // Copy what we need: reduce_front() pops a fully filled order,
+            // which invalidates any reference to it.
+            const Order& passive = level.front().value().get();
+            const OrderId passive_id = passive.id;
+            const Quantity fill_qty = std::min(aggressor.qty_remaining, passive.qty_remaining);
+            const bool passive_done = fill_qty == passive.qty_remaining;
 
-            OrderId buy_id  = aggressor.is_buy()  ? aggressor.id : passive.id;
-            OrderId sell_id = aggressor.is_sell() ? aggressor.id : passive.id;
-            trades.emplace_back(buy_id, sell_id, fill_prc, fill_qty);
+            OrderId buy_id  = aggressor.is_buy()  ? aggressor.id : passive_id;
+            OrderId sell_id = aggressor.is_sell() ? aggressor.id : passive_id;
+            trades.emplace_back(buy_id, sell_id, passive_price, fill_qty);
 
             aggressor.qty_remaining -= fill_qty;
             level.reduce_front(fill_qty);
-
-            // Remove the order_index entry for a fully-filled passive order.
-            if (passive.qty_remaining == 0) {
-                order_index_.erase(passive.id);
-            }
+            if (passive_done) order_index_.erase(passive_id);
         }
 
         if (level.empty()) passive_side.erase(passive_side.begin());
@@ -45,71 +44,58 @@ std::vector<Trade> OrderBook::match(Order& aggressor, PassiveMap& passive_side) 
     return trades;
 }
 
+template <typename PassiveMap>
+Quantity OrderBook::fillable_qty(const Order& aggressor, const PassiveMap& passive_side) const {
+    Quantity available = 0;
+    for (const auto& [price, level] : passive_side) {
+        if (aggressor.is_buy() ? aggressor.price < price : aggressor.price > price) break;
+        available += level.total_qty();
+        if (available >= aggressor.qty_remaining) break;
+    }
+    return available;
+}
+
 std::vector<Trade> OrderBook::add_limit_order(Order order) {
-    std::vector<Trade> trades;
-
-    if (order.is_buy()) {
-        trades = match(order, asks_);
-    } else {
-        trades = match(order, bids_);
-    }
-
-    // IOC: cancel unfilled remainder immediately.
-    if (order.tif == TimeInForce::IOC && order.qty_remaining > 0) {
-        return trades;
-    }
-
-    // FOK: if not fully filled, discard entirely (already removed from book).
+    // FOK must be decided before any trade happens: either the whole quantity
+    // is available at acceptable prices, or nothing executes.
     if (order.tif == TimeInForce::FOK) {
-        // If we generated any partial trades we must not rest — just return
-        // what we matched. Caller can detect partial fill by inspecting trades.
-        return trades;
+        const Quantity available = order.is_buy() ? fillable_qty(order, asks_)
+                                                  : fillable_qty(order, bids_);
+        if (available < order.qty_remaining) return {};
     }
 
-    // Rest the remaining qty.
-    if (order.qty_remaining > 0) {
-        rest_order(std::move(order));
-    }
+    std::vector<Trade> trades = order.is_buy() ? match(order, asks_) : match(order, bids_);
 
+    // IOC and FOK never rest.
+    if (order.tif == TimeInForce::IOC || order.tif == TimeInForce::FOK) return trades;
+
+    if (order.qty_remaining > 0) rest_order(std::move(order));
     return trades;
 }
 
 void OrderBook::rest_order(Order order) {
-    Price price = order.price;
-    order_index_[order.id] = price;
-
-    if (order.is_buy()) {
-        bids_[price].add(std::move(order));
-    } else {
-        asks_[price].add(std::move(order));
-    }
+    const Price price = order.price;
+    const Side side = order.side;
+    const OrderId id = order.id;
+    auto it = order.is_buy() ? bids_[price].add(std::move(order))
+                             : asks_[price].add(std::move(order));
+    order_index_[id] = Location{price, side, it};
 }
 
 bool OrderBook::cancel(OrderId id) {
-    auto it = order_index_.find(id);
-    if (it == order_index_.end()) return false;
+    auto found = order_index_.find(id);
+    if (found == order_index_.end()) return false;
+    const Location loc = found->second;
+    order_index_.erase(found);
 
-    Price price = it->second;
-    order_index_.erase(it);
-
-    // Try bids first, then asks.
-    auto bid_it = bids_.find(price);
-    if (bid_it != bids_.end()) {
-        if (bid_it->second.remove(id)) {
-            if (bid_it->second.empty()) bids_.erase(bid_it);
-            return true;
-        }
-    }
-
-    auto ask_it = asks_.find(price);
-    if (ask_it != asks_.end()) {
-        if (ask_it->second.remove(id)) {
-            if (ask_it->second.empty()) asks_.erase(ask_it);
-            return true;
-        }
-    }
-
-    return false;
+    auto erase_from = [&](auto& side_map) {
+        auto level = side_map.find(loc.price);
+        level->second.erase(loc.it);
+        if (level->second.empty()) side_map.erase(level);
+    };
+    if (loc.side == Side::Buy) erase_from(bids_);
+    else erase_from(asks_);
+    return true;
 }
 
 // ── Queries ───────────────────────────────────────────────────────────────────

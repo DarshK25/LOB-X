@@ -164,18 +164,21 @@ where δ* = γσ²(T-t) + (2/γ)·ln(1 + γ/κ)
 Δr = -qγσ²(T-t)
 ```
 
-**Example**:
-- q = 10 BTC (long)
-- γ = 0.1 (risk aversion)
-- σ = 0.02 per √minute
-- T-t = 60 minutes
+**Example** (units matter: σ is a *price* volatility, USD/√s, so γσ²τ is in USD):
+- q = 3 lots long (3 × 0.001 BTC)
+- γ = 0.03 per USD (per lot)
+- σ = 2.2 USD/√s (calm BTCUSDT, calibrated in LOB-X)
+- τ = 60 s
 
 ```
-Δr = -10 · 0.1 · (0.02)² · 60 = -0.024 = -$24
+Δr = -q·γ·σ²·τ = -3 · 0.03 · 2.2² · 60 = -$26.1
 
-So if mid = $100, reservation = $100 - $24 = $76
-You're willing to sell at much lower price to unload inventory!
+The reservation price sits $26 below mid: the ask is pulled towards
+(and often onto) the touch to sell inventory, the bid moves away.
 ```
+
+A per-update log return (~3e-6 for BTC) plugged in as σ gives
+γσ²τ ≈ 0, which silently turns AS into a fixed-spread quoter.
 
 **Spread components**:
 
@@ -629,29 +632,26 @@ plt.show()
 
 ### 5.4.2 Parameter Calibration
 
-**From your codebase** (`scripts/train_hawkes.py`):
+In LOB-X all of this lives in `lobx.analytics.calibration.calibrate` (see
+`docs/models.md`):
 
 ```python
-from lobx.models.hawkes.calibration import calibrate
-import pandas as pd
+from lobx.backtest.data import load_history
+from lobx.analytics.calibration import calibrate
 
-# Load trade data
-trades = pd.read_parquet("data/raw/trades_2026-08-18.parquet")
-event_times = trades['event_time'].values / 1000.0  # Convert to seconds
-
-# Calibrate
-T = event_times[-1] - event_times[0]
-event_times = event_times - event_times[0]  # Shift to [0, T]
-
-params = calibrate(event_times, T)
-print(f"μ = {params['mu']:.4f}")
-print(f"α = {params['alpha']:.4f}")
-print(f"β = {params['beta']:.4f}")
-
-# Compute κ for AS model
-kappa = params['mu'] / (1 - params['alpha'] / params['beta'])
-print(f"κ (fill rate) = {kappa:.4f}")
+data = load_history("calm")
+ins, oos = data.split(0.5)
+calib = calibrate(ins)          # sigma, arrival {A, k}, hawkes {buy, sell}, fair_value
 ```
+
+Two different quantities are easy to confuse here:
+
+* The Hawkes stationary rate μ/(1 − α/β) is a number of market orders per
+  second. It says *how often* orders arrive.
+* κ (or k in GLFT) is the decay of λ(δ) = A·e^(−kδ) with quote depth δ, in
+  1/USD. It says *how far* through the book those orders reach. It is fitted
+  from how deep market orders execute relative to the prior mid, not from
+  arrival times. Using the stationary rate as κ mixes up these units.
 
 ---
 
@@ -664,13 +664,12 @@ print(f"κ (fill rate) = {kappa:.4f}")
 ✅ How to calibrate ALL parameters from real market data
 ✅ How these models fit together in a live trading system
 
-**Congratulations! You now have PhD-level understanding of quantitative market making!**
 
 ---
 
 ## 5.6 FURTHER READING
 
-### Papers (In Your `/papers` Directory)
+### Papers
 
 1. **Avellaneda & Stoikov (2008)**: "High-frequency trading in a limit order book"
 2. **Almgren & Chriss (2000)**: "Optimal execution of portfolio transactions"
@@ -692,6 +691,3 @@ print(f"κ (fill rate) = {kappa:.4f}")
 4. Backtest and optimize strategies
 5. Deploy live (with proper risk management!)
 
-**What HFT firms look for in $50K+ candidates: YOU NOW HAVE IT ALL!**
-
-🎯 **Master the codebase, optimize the parameters, add novel features, document your work, and you're hire-ready!**

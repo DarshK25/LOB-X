@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lobx.market_data.trade_stream import TradeTick
@@ -70,13 +70,16 @@ class PostgresTradeWriter:
         try:
             # Serverless databases close idle connections quickly.
             # Keep max size small (5) and set appropriate timeouts.
-            self._pool = await asyncpg.create_pool(
-                self._url,
-                min_size=1,
-                max_size=5,
-                command_timeout=30.0,
+            self._pool = await asyncio.wait_for(
+                asyncpg.create_pool(
+                    self._url,
+                    min_size=1,
+                    max_size=5,
+                    command_timeout=30.0,
+                ),
+                timeout=10.0,
             )
-            await self._ensure_schema()
+            await asyncio.wait_for(self._ensure_schema(), timeout=10.0)
             self.last_error = None
         except Exception as e:
             self.last_error = str(e)

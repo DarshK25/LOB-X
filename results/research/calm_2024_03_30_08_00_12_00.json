@@ -1,0 +1,1673 @@
+{
+  "window": "calm 2024-03-30 08:00-12:00",
+  "venue": "Binance USD-M futures",
+  "hours": 3.9999941666666667,
+  "in_sample": [
+    1711785600000,
+    1711792799995
+  ],
+  "out_of_sample": [
+    1711792800009,
+    1711799999993
+  ],
+  "oos_hours": 1.9999955555555555,
+  "oos_sigma": 1.8649728642489096,
+  "calibration": {
+    "window": "calm 2024-03-30 08:00-12:00:in-sample",
+    "venue": "Binance USD-M futures",
+    "tick_size": 0.1,
+    "hours": 1.9999986111111112,
+    "sigma": 2.223347905743684,
+    "sigma_bps_per_sqrt_s": 0.3175301796762047,
+    "arrival": {
+      "A": 0.30165440781254876,
+      "k": 0.8544095670966426,
+      "r2": 0.7876273720306595,
+      "depths": [
+        0.05,
+        0.15000000000000002,
+        0.25,
+        0.35000000000000003,
+        0.45,
+        0.55,
+        0.6500000000000001,
+        0.7500000000000001,
+        0.8500000000000001,
+        0.9500000000000001,
+        1.05,
+        1.1500000000000001,
+        1.2500000000000002,
+        1.35,
+        1.4500000000000002,
+        1.55,
+        1.6500000000000001,
+        1.7500000000000002,
+        1.85,
+        1.9500000000000002,
+        2.05,
+        2.15,
+        2.25,
+        2.35,
+        2.45,
+        2.55,
+        2.65,
+        2.75,
+        2.85,
+        2.95
+      ],
+      "rates": [
+        1.9861819348485659,
+        0.2322918279804361,
+        0.20888903395071803,
+        0.1904167989005548,
+        0.17416678761582474,
+        0.16069455603788613,
+        0.14708343547460798,
+        0.1335417594039996,
+        0.12340286347421074,
+        0.11208341116903553,
+        0.103472294077982,
+        0.09333339814819316,
+        0.0869445048225728,
+        0.08027783352627328,
+        0.07458338512735078,
+        0.06881949223575849,
+        0.06340282180751515,
+        0.05986115268135603,
+        0.055763927613838624,
+        0.05243059196568887,
+        0.04909725631753911,
+        0.04562503168404978,
+        0.04361114139662597,
+        0.041875029079881304,
+        0.04020836125580643,
+        0.038680582417071126,
+        0.03694447010032646,
+        0.03555558024693073,
+        0.03388891242285585,
+        0.032083355613441396
+      ],
+      "market_orders": 28653
+    },
+    "hawkes": {
+      "buy": {
+        "mu": 0.6142444683086739,
+        "alpha": 0.32340722585701376,
+        "beta": 0.47222300144089135,
+        "branching_ratio": 0.6848612305419328,
+        "mean_intensity": 1.9491237760589344,
+        "empirical_rate": 1.9475979206863534,
+        "log_likelihood": -3122.9598672296734,
+        "events": 14022,
+        "window_s": 7199.638000773026
+      },
+      "sell": {
+        "mu": 0.7306170154398245,
+        "alpha": 0.32015872021667235,
+        "beta": 0.49976463885136674,
+        "branching_ratio": 0.6406189940779097,
+        "mean_intensity": 2.0329872848044004,
+        "empirical_rate": 2.032183813235666,
+        "log_likelihood": -2978.737892986177,
+        "events": 14631,
+        "window_s": 7199.644001053406
+      }
+    },
+    "fair_value": {
+      "b_micro": 0.0,
+      "b_flow": 0.0816251045649811,
+      "b_obi": 0.7088192325234008,
+      "r2_in_sample": 0.10197966669589054,
+      "horizon_ms": 2000,
+      "samples": 50371,
+      "r2_out_of_sample": 0.13197941182901185
+    }
+  },
+  "fees": {
+    "vip0": {
+      "profile": {
+        "maker": 0.0002,
+        "taker": 0.0005,
+        "label": "Binance USD-M VIP0 (2.0 / 5.0 bp)"
+      },
+      "tuning": {
+        "AS": 0.03,
+        "GLFT": 1.0,
+        "grid": [
+          {
+            "gamma": 0.0001,
+            "AS": {
+              "net_pnl": -24.373702399999942,
+              "sharpe": -955.2354734664622,
+              "fills": 1113,
+              "fills_per_hour": 556.5827916902639,
+              "max_drawdown": 24.373702399999942
+            },
+            "GLFT": {
+              "net_pnl": -24.487255619999072,
+              "sharpe": -968.717572853365,
+              "fills": 1124,
+              "fills_per_hour": 562.0836099369782,
+              "max_drawdown": 24.487255619999072
+            }
+          },
+          {
+            "gamma": 0.0003,
+            "AS": {
+              "net_pnl": -24.27525967999931,
+              "sharpe": -962.2168883587209,
+              "fills": 1132,
+              "fills_per_hour": 566.0842050254976,
+              "max_drawdown": 24.27525967999931
+            },
+            "GLFT": {
+              "net_pnl": -24.442018520000737,
+              "sharpe": -960.6343628502048,
+              "fills": 1136,
+              "fills_per_hour": 568.0845025697573,
+              "max_drawdown": 24.442018520000737
+            }
+          },
+          {
+            "gamma": 0.001,
+            "AS": {
+              "net_pnl": -23.095291391749825,
+              "sharpe": -1060.5512387302886,
+              "fills": 1158,
+              "fills_per_hour": 579.0861390631857,
+              "max_drawdown": 23.095291391749825
+            },
+            "GLFT": {
+              "net_pnl": -24.34099225999982,
+              "sharpe": -993.3142920423228,
+              "fills": 1181,
+              "fills_per_hour": 590.587849942679,
+              "max_drawdown": 24.34099225999982
+            }
+          },
+          {
+            "gamma": 0.003,
+            "AS": {
+              "net_pnl": -19.049586259513582,
+              "sharpe": -1169.7027431090912,
+              "fills": 991,
+              "fills_per_hour": 495.5737165903428,
+              "max_drawdown": 19.049586259513582
+            },
+            "GLFT": {
+              "net_pnl": -23.483281919999207,
+              "sharpe": -1044.7479551610888,
+              "fills": 1170,
+              "fills_per_hour": 585.0870316959648,
+              "max_drawdown": 23.483281919999207
+            }
+          },
+          {
+            "gamma": 0.01,
+            "AS": {
+              "net_pnl": -13.014453779513758,
+              "sharpe": -1239.8566172038888,
+              "fills": 679,
+              "fills_per_hour": 339.55050813808555,
+              "max_drawdown": 13.014453779513758
+            },
+            "GLFT": {
+              "net_pnl": -21.669979479999874,
+              "sharpe": -1086.0053256927556,
+              "fills": 1114,
+              "fills_per_hour": 557.0828660763289,
+              "max_drawdown": 21.669979479999874
+            }
+          },
+          {
+            "gamma": 0.03,
+            "AS": {
+              "net_pnl": -5.916659719999873,
+              "sharpe": -856.6171351702309,
+              "fills": 318,
+              "fills_per_hour": 159.02365476864685,
+              "max_drawdown": 5.916659719999873
+            },
+            "GLFT": {
+              "net_pnl": -19.453245639513614,
+              "sharpe": -1132.3043672220435,
+              "fills": 1009,
+              "fills_per_hour": 504.57505553951154,
+              "max_drawdown": 19.453245639513614
+            }
+          },
+          {
+            "gamma": 0.1,
+            "AS": {
+              "net_pnl": -0.6803998599999768,
+              "sharpe": -261.08209698217524,
+              "fills": 36,
+              "fills_per_hour": 18.002677898337378,
+              "max_drawdown": 0.6844172199999774
+            },
+            "GLFT": {
+              "net_pnl": -16.285771439999653,
+              "sharpe": -1164.9077045136619,
+              "fills": 861,
+              "fills_per_hour": 430.5640464019023,
+              "max_drawdown": 16.285771439999653
+            }
+          },
+          {
+            "gamma": 0.3,
+            "AS": {
+              "net_pnl": -0.09396041999999338,
+              "sharpe": -93.46954238880943,
+              "fills": 4,
+              "fills_per_hour": 2.0002975442597086,
+              "max_drawdown": 0.09396041999999338
+            },
+            "GLFT": {
+              "net_pnl": -13.446968001750646,
+              "sharpe": -1192.755557519733,
+              "fills": 711,
+              "fills_per_hour": 355.5528884921632,
+              "max_drawdown": 13.446968001750646
+            }
+          },
+          {
+            "gamma": 1.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": -9.794895819999969,
+              "sharpe": -1077.1324227677412,
+              "fills": 528,
+              "fills_per_hour": 264.03927584228154,
+              "max_drawdown": 9.794895819999969
+            }
+          },
+          {
+            "gamma": 3.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": -2.8313725999999795,
+              "sharpe": -523.0352737729096,
+              "fills": 145,
+              "fills_per_hour": 72.51078597941444,
+              "max_drawdown": 2.8313725999999795
+            }
+          },
+          {
+            "gamma": 10.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": -0.37345116000000433,
+              "sharpe": -215.3343379815559,
+              "fills": 22,
+              "fills_per_hour": 11.001636493428398,
+              "max_drawdown": 0.37345116000000433
+            }
+          }
+        ],
+        "seconds": 62.25030639999932
+      },
+      "oos": [
+        {
+          "strategy": "NoTrade",
+          "fills": 0,
+          "taker_fills": 0,
+          "orders_sent": 0,
+          "cancels_sent": 0,
+          "rejects": 0,
+          "maker_qty": 0.0,
+          "fill_ratio": 0.0,
+          "turnover": 0.0,
+          "fees": 0.0,
+          "maker_fees": 0.0,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": 0.0,
+          "gross_pnl": 0.0,
+          "edge": 0.0,
+          "edge_per_fill_usd": 0.0,
+          "adverse_selection_cost": 0.0,
+          "adverse_bps": 0.0,
+          "inventory_pnl": 0.0,
+          "markout_1000ms": 0.0,
+          "adverse_1000ms": 0.0,
+          "markout_5000ms": 0.0,
+          "adverse_5000ms": 0.0,
+          "markout_30000ms": 0.0,
+          "adverse_30000ms": 0.0,
+          "sharpe": 0.0,
+          "max_drawdown": 0.0,
+          "pnl_per_hour": 0.0,
+          "fills_per_hour": 0.0,
+          "max_abs_position": 0.0,
+          "mean_abs_position": 0.0,
+          "maker_turnover": 0.0,
+          "breakeven_maker_fee_bps": null
+        },
+        {
+          "strategy": "FixedSpread",
+          "fills": 1827,
+          "taker_fills": 1,
+          "orders_sent": 3821,
+          "cancels_sent": 1747,
+          "rejects": 296,
+          "maker_qty": 1.7850354156667523,
+          "fill_ratio": 0.46716446366576736,
+          "turnover": 125272.40235918577,
+          "fees": 25.07480535371908,
+          "maker_fees": 25.040930550582605,
+          "taker_fees": 0.033874803136380534,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -34.217646167949574,
+          "gross_pnl": -9.142840814230496,
+          "edge": 0.028633726092351815,
+          "edge_per_fill_usd": 1.5672537543706523e-05,
+          "markout_1000ms": -4.531642926504272,
+          "adverse_1000ms": 4.560276652596624,
+          "markout_5000ms": -6.5238338480910425,
+          "adverse_5000ms": 6.552467574183394,
+          "markout_30000ms": -10.370846737654944,
+          "adverse_30000ms": 10.399480463747292,
+          "adverse_selection_cost": 6.552467574183394,
+          "adverse_bps": 0.5233405812094267,
+          "inventory_pnl": -9.171474540322848,
+          "sharpe": -1263.2340420609269,
+          "max_drawdown": 34.217646167949574,
+          "pnl_per_hour": -17.111363646160587,
+          "fills_per_hour": 913.635649515185,
+          "max_abs_position": 0.010000000000000002,
+          "mean_abs_position": 0.006268344015104946,
+          "maker_turnover": 125204.65275291301,
+          "breakeven_maker_fee_bps": -0.7329372683519041
+        },
+        {
+          "strategy": "InventorySkew",
+          "fills": 1575,
+          "taker_fills": 1,
+          "orders_sent": 3898,
+          "cancels_sent": 2096,
+          "rejects": 268,
+          "maker_qty": 1.557,
+          "fill_ratio": 0.39943560800413724,
+          "turnover": 109419.9666,
+          "fees": 21.947206710000042,
+          "maker_fees": 21.84185106,
+          "taker_fees": 0.10535565000000001,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -30.87780670999896,
+          "gross_pnl": -8.930599999998918,
+          "edge": 0.05890108271574094,
+          "edge_per_fill_usd": 3.739751283539107e-05,
+          "markout_1000ms": -4.731211193366825,
+          "adverse_1000ms": 4.790112276082565,
+          "markout_5000ms": -6.596499999998982,
+          "adverse_5000ms": 6.655401082714723,
+          "markout_30000ms": -9.647086913269302,
+          "adverse_30000ms": 9.705987995985042,
+          "adverse_selection_cost": 6.655401082714723,
+          "adverse_bps": 0.6094173121529127,
+          "inventory_pnl": -8.989501082714659,
+          "sharpe": -1188.1448706296037,
+          "max_drawdown": 30.87780670999896,
+          "pnl_per_hour": -15.441195943675007,
+          "fills_per_hour": 787.6169392372284,
+          "max_abs_position": 0.011000000000000003,
+          "mean_abs_position": 0.004591683285501371,
+          "maker_turnover": 109209.2553,
+          "breakeven_maker_fee_bps": -0.8273983395616944
+        },
+        {
+          "strategy": "AS",
+          "fills": 427,
+          "taker_fills": 1,
+          "orders_sent": 6933,
+          "cancels_sent": 6524,
+          "rejects": 19,
+          "maker_qty": 0.42547783138342266,
+          "fill_ratio": 0.061369945389208536,
+          "turnover": 29879.317403835852,
+          "fees": 5.986866163568994,
+          "maker_fees": 5.96852835889929,
+          "taker_fees": 0.018337804669701852,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -8.162862327715477,
+          "gross_pnl": -2.1759961641464827,
+          "edge": 0.32182389156935004,
+          "edge_per_fill_usd": 0.0007536859287338408,
+          "markout_1000ms": -1.4129143819191632,
+          "adverse_1000ms": 1.7347382734885133,
+          "markout_5000ms": -1.733320549842335,
+          "adverse_5000ms": 2.055144441411685,
+          "markout_30000ms": -2.0985653831749205,
+          "adverse_30000ms": 2.4203892747442706,
+          "adverse_selection_cost": 2.055144441411685,
+          "adverse_bps": 0.6886603590807743,
+          "inventory_pnl": -2.4978200557158328,
+          "sharpe": -1127.4539795719884,
+          "max_drawdown": 8.162862327715477,
+          "pnl_per_hour": -4.082037232996916,
+          "fills_per_hour": 213.53170352653748,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.0006015896944336915,
+          "maker_turnover": 29842.64179449645,
+          "breakeven_maker_fee_bps": -0.7353015138294028
+        },
+        {
+          "strategy": "GLFT",
+          "fills": 485,
+          "taker_fills": 1,
+          "orders_sent": 5427,
+          "cancels_sent": 4947,
+          "rejects": 22,
+          "maker_qty": 0.4834680983748981,
+          "fill_ratio": 0.08908570082455962,
+          "turnover": 33918.869204560244,
+          "fees": 6.785900455905735,
+          "maker_fees": 6.782356097582926,
+          "taker_fees": 0.0035443583228083786,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -9.160087936711152,
+          "gross_pnl": -2.374187480805417,
+          "edge": 0.3517734049191247,
+          "edge_per_fill_usd": 0.0007253059895239684,
+          "markout_1000ms": -1.4967195233618602,
+          "adverse_1000ms": 1.848492928280985,
+          "markout_5000ms": -1.8598756912851047,
+          "adverse_5000ms": 2.211649096204229,
+          "markout_30000ms": -2.3316050548474876,
+          "adverse_30000ms": 2.6833784597666117,
+          "adverse_selection_cost": 2.211649096204229,
+          "adverse_bps": 0.6521772270236326,
+          "inventory_pnl": -2.7259608857245414,
+          "sharpe": -1140.6771890859904,
+          "max_drawdown": 9.160087936711152,
+          "pnl_per_hour": -4.5807240786389185,
+          "fills_per_hour": 242.5360098603529,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.0006268274462215759,
+          "maker_turnover": 33911.78048791463,
+          "breakeven_maker_fee_bps": -0.7011521674527217
+        },
+        {
+          "strategy": "GLFT+Hawkes+FV",
+          "fills": 387,
+          "taker_fills": 1,
+          "orders_sent": 43162,
+          "cancels_sent": 42790,
+          "rejects": 33,
+          "maker_qty": 0.3854778313834227,
+          "fill_ratio": 0.008930953880346393,
+          "turnover": 27074.700203835855,
+          "fees": 5.425942723568991,
+          "maker_fees": 5.40760491889929,
+          "taker_fees": 0.018337804669701852,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -7.244538887715803,
+          "gross_pnl": -1.8185961641468111,
+          "edge": 0.377523891569318,
+          "edge_per_fill_usd": 0.000975513931703664,
+          "markout_1000ms": -1.214914381919192,
+          "adverse_1000ms": 1.5924382734885103,
+          "markout_5000ms": -1.5011205498423958,
+          "adverse_5000ms": 1.878644441411714,
+          "markout_30000ms": -1.8005153831750342,
+          "adverse_30000ms": 2.1780392747443518,
+          "adverse_selection_cost": 1.878644441411714,
+          "adverse_bps": 0.6948157158619159,
+          "inventory_pnl": -2.196120055716129,
+          "sharpe": -1100.1667919457147,
+          "max_drawdown": 7.244538887715803,
+          "pnl_per_hour": -3.6228073301128862,
+          "fills_per_hour": 193.52873364114757,
+          "max_abs_position": 0.00220575503829706,
+          "mean_abs_position": 0.0005256725803900308,
+          "maker_turnover": 27038.024594496448,
+          "breakeven_maker_fee_bps": -0.6793891182384745
+        },
+        {
+          "strategy": "GLFT+HFV fee-aware",
+          "fills": 0,
+          "taker_fills": 0,
+          "orders_sent": 0,
+          "cancels_sent": 0,
+          "rejects": 0,
+          "maker_qty": 0.0,
+          "fill_ratio": 0.0,
+          "turnover": 0.0,
+          "fees": 0.0,
+          "maker_fees": 0.0,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": 0.0,
+          "gross_pnl": 0.0,
+          "edge": 0.0,
+          "edge_per_fill_usd": 0.0,
+          "adverse_selection_cost": 0.0,
+          "adverse_bps": 0.0,
+          "inventory_pnl": 0.0,
+          "markout_1000ms": 0.0,
+          "adverse_1000ms": 0.0,
+          "markout_5000ms": 0.0,
+          "adverse_5000ms": 0.0,
+          "markout_30000ms": 0.0,
+          "adverse_30000ms": 0.0,
+          "sharpe": 0.0,
+          "max_drawdown": 0.0,
+          "pnl_per_hour": 0.0,
+          "fills_per_hour": 0.0,
+          "max_abs_position": 0.0,
+          "mean_abs_position": 0.0,
+          "maker_turnover": 0.0,
+          "breakeven_maker_fee_bps": null
+        }
+      ],
+      "stress": [
+        {
+          "strategy": "stress: latency 50+50ms",
+          "fills": 384,
+          "taker_fills": 0,
+          "orders_sent": 43851,
+          "cancels_sent": 43496,
+          "rejects": 103,
+          "maker_qty": 0.382,
+          "fill_ratio": 0.00871131787188662,
+          "turnover": 26792.2782,
+          "fees": 5.358455640000002,
+          "maker_fees": 5.358455640000001,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -7.18525564000005,
+          "gross_pnl": -1.8268000000000484,
+          "edge": 0.362800000000163,
+          "edge_per_fill_usd": 0.0009447916666670912,
+          "markout_1000ms": -1.2186999999997934,
+          "adverse_1000ms": 1.5814999999999562,
+          "markout_5000ms": -1.553599999999817,
+          "adverse_5000ms": 1.91639999999998,
+          "markout_30000ms": -1.7194999999998546,
+          "adverse_30000ms": 2.082300000000018,
+          "adverse_selection_cost": 1.91639999999998,
+          "adverse_bps": 0.7152807184571486,
+          "inventory_pnl": -2.1896000000002114,
+          "sharpe": -1144.244108820737,
+          "max_drawdown": 7.18525564000005,
+          "pnl_per_hour": -3.5931613046437283,
+          "fills_per_hour": 192.0285108997433,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.00046236111111111114,
+          "maker_turnover": 26792.2782,
+          "breakeven_maker_fee_bps": -0.6818382469617862
+        },
+        {
+          "strategy": "stress: latency 150+150ms",
+          "fills": 389,
+          "taker_fills": 0,
+          "orders_sent": 43733,
+          "cancels_sent": 43502,
+          "rejects": 240,
+          "maker_qty": 0.388,
+          "fill_ratio": 0.008872018841609302,
+          "turnover": 27212.5341,
+          "fees": 5.442506819999998,
+          "maker_fees": 5.44250682,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -7.3652068199998055,
+          "gross_pnl": -1.9226999999998071,
+          "edge": 0.31355000000020666,
+          "edge_per_fill_usd": 0.0008060411311059297,
+          "markout_1000ms": -1.3063999999997613,
+          "adverse_1000ms": 1.619949999999968,
+          "markout_5000ms": -1.6111999999997497,
+          "adverse_5000ms": 1.9247499999999564,
+          "markout_30000ms": -1.7718499999998458,
+          "adverse_30000ms": 2.0854000000000523,
+          "adverse_selection_cost": 1.9247499999999564,
+          "adverse_bps": 0.7073027425255322,
+          "inventory_pnl": -2.236250000000014,
+          "sharpe": -1170.7934967397975,
+          "max_drawdown": 7.3652068199998055,
+          "pnl_per_hour": -3.683150255503116,
+          "fills_per_hour": 194.52888213541706,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.00047458333333333337,
+          "maker_turnover": 27212.5341,
+          "breakeven_maker_fee_bps": -0.7065494131984595
+        },
+        {
+          "strategy": "stress: optimistic queue",
+          "fills": 502,
+          "taker_fills": 0,
+          "orders_sent": 52342,
+          "cancels_sent": 51856,
+          "rejects": 29,
+          "maker_qty": 0.502,
+          "fill_ratio": 0.009590768407785336,
+          "turnover": 35206.0091,
+          "fees": 7.041201820000004,
+          "maker_fees": 7.04120182,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -7.804701819999855,
+          "gross_pnl": -0.7634999999998513,
+          "edge": 0.5802000000000699,
+          "edge_per_fill_usd": 0.001155776892430418,
+          "markout_1000ms": -0.7449999999999564,
+          "adverse_1000ms": 1.3252000000000264,
+          "markout_5000ms": -0.7638999999998342,
+          "adverse_5000ms": 1.344099999999904,
+          "markout_30000ms": -0.7884999999998836,
+          "adverse_30000ms": 1.3686999999999534,
+          "adverse_selection_cost": 1.344099999999904,
+          "adverse_bps": 0.38178141583219216,
+          "inventory_pnl": -1.343699999999921,
+          "sharpe": -977.7289748270961,
+          "max_drawdown": 7.804701819999855,
+          "pnl_per_hour": -3.902930386747627,
+          "fills_per_hour": 251.0372720616436,
+          "max_abs_position": 0.002,
+          "mean_abs_position": 2.3888888888888885e-05,
+          "maker_turnover": 35206.0091,
+          "breakeven_maker_fee_bps": -0.21686638716452847
+        },
+        {
+          "strategy": "stress: requote 500ms",
+          "fills": 390,
+          "taker_fills": 0,
+          "orders_sent": 16778,
+          "cancels_sent": 16390,
+          "rejects": 12,
+          "maker_qty": 0.388,
+          "fill_ratio": 0.023125521516274724,
+          "turnover": 27213.3136,
+          "fees": 5.442662720000002,
+          "maker_fees": 5.44266272,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -7.304462719999948,
+          "gross_pnl": -1.8617999999999455,
+          "edge": 0.35215000000013963,
+          "edge_per_fill_usd": 0.0009029487179490759,
+          "markout_1000ms": -1.2529999999997816,
+          "adverse_1000ms": 1.6051499999999215,
+          "markout_5000ms": -1.5190999999997439,
+          "adverse_5000ms": 1.8712499999998835,
+          "markout_30000ms": -1.751449999999779,
+          "adverse_30000ms": 2.1035999999999184,
+          "adverse_selection_cost": 1.8712499999998835,
+          "adverse_bps": 0.6876229875952641,
+          "inventory_pnl": -2.213950000000085,
+          "sharpe": -1087.9758906007125,
+          "max_drawdown": 7.304462719999948,
+          "pnl_per_hour": -3.652773695427809,
+          "fills_per_hour": 195.0289563825518,
+          "max_abs_position": 0.002,
+          "mean_abs_position": 0.00045583333333333337,
+          "maker_turnover": 27213.3136,
+          "breakeven_maker_fee_bps": -0.6841504226078318
+        },
+        {
+          "strategy": "stress: FixedSpread optimistic queue",
+          "fills": 18089,
+          "taker_fills": 1,
+          "orders_sent": 20019,
+          "cancels_sent": 1612,
+          "rejects": 323,
+          "maker_qty": 18.089,
+          "fill_ratio": 0.9035915879913411,
+          "turnover": 1269261.8642,
+          "fees": 253.99987095999907,
+          "maker_fees": 253.75404076,
+          "taker_fees": 0.2458302,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -263.1688709600396,
+          "gross_pnl": -9.16900000004054,
+          "edge": 0.8752000000135305,
+          "edge_per_fill_usd": 4.838299519119523e-05,
+          "markout_1000ms": -3.3725499999864543,
+          "adverse_1000ms": 4.247749999999986,
+          "markout_5000ms": -5.730999999986176,
+          "adverse_5000ms": 6.606199999999706,
+          "markout_30000ms": -8.514499999986743,
+          "adverse_30000ms": 9.389700000000271,
+          "adverse_selection_cost": 6.606199999999706,
+          "adverse_bps": 0.052067742292607154,
+          "inventory_pnl": -10.04420000005407,
+          "sharpe": -2545.2795403662235,
+          "max_drawdown": 263.1688709600396,
+          "pnl_per_hour": -131.6039750146435,
+          "fills_per_hour": 9045.843056420461,
+          "max_abs_position": 0.010000000000000002,
+          "mean_abs_position": 0.00752527777777778,
+          "maker_turnover": 1268770.2038,
+          "breakeven_maker_fee_bps": -0.07420437658326841
+        }
+      ],
+      "bootstrap": {
+        "NoTrade": {
+          "pnl": 0.0,
+          "pnl_ci": [
+            0.0,
+            0.0
+          ],
+          "sharpe_ci": [
+            0.0,
+            0.0
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 34.217646167949574,
+          "diff_ci": [
+            30.05526125083804,
+            39.56412870481505
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "FixedSpread": {
+          "pnl": -34.217646167949574,
+          "pnl_ci": [
+            -39.56412870481505,
+            -30.055261250838043
+          ],
+          "sharpe_ci": [
+            -1483.5518003490995,
+            -1125.1667806824046
+          ],
+          "p_positive": 0.0
+        },
+        "InventorySkew": {
+          "pnl": -30.87780670999896,
+          "pnl_ci": [
+            -35.94505411149887,
+            -26.859387844249145
+          ],
+          "sharpe_ci": [
+            -1383.4678197705496,
+            -1066.3976955678424
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 3.339839457950614,
+          "diff_ci": [
+            2.724162954576829,
+            4.255626600281761
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "AS": {
+          "pnl": -8.162862327715477,
+          "pnl_ci": [
+            -9.404078879168257,
+            -7.3302071119358905
+          ],
+          "sharpe_ci": [
+            -1350.4279414905768,
+            -1013.2214925469337
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 26.054783840234098,
+          "diff_ci": [
+            22.541247182027174,
+            30.41507488277157
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "GLFT": {
+          "pnl": -9.160087936711152,
+          "pnl_ci": [
+            -10.435723578503993,
+            -8.030672130546991
+          ],
+          "sharpe_ci": [
+            -1326.0197968057191,
+            -1020.573484787493
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 25.057558231238424,
+          "diff_ci": [
+            21.923745889326877,
+            29.231370324063064
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "GLFT+Hawkes+FV": {
+          "pnl": -7.244538887715803,
+          "pnl_ci": [
+            -8.45600075482726,
+            -6.379064802209939
+          ],
+          "sharpe_ci": [
+            -1304.9172686929232,
+            -980.9046666737688
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 26.973107280233773,
+          "diff_ci": [
+            23.607852556339985,
+            31.160914703951182
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "GLFT+HFV fee-aware": {
+          "pnl": 0.0,
+          "pnl_ci": [
+            0.0,
+            0.0
+          ],
+          "sharpe_ci": [
+            0.0,
+            0.0
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 34.217646167949574,
+          "diff_ci": [
+            30.05526125083804,
+            39.56412870481505
+          ],
+          "p_better_than_baseline": 1.0
+        }
+      },
+      "oos_seconds": 33.76206789999924
+    },
+    "mm_rebate": {
+      "profile": {
+        "maker": -5e-05,
+        "taker": 0.00017,
+        "label": "MM-program scenario (-0.5 / 1.7 bp)"
+      },
+      "tuning": {
+        "AS": 0.03,
+        "GLFT": 1.0,
+        "grid": [
+          {
+            "gamma": 0.0001,
+            "AS": {
+              "net_pnl": -4.891543826999934,
+              "sharpe": -244.85308615018747,
+              "fills": 1113,
+              "fills_per_hour": 556.5827916902639,
+              "max_drawdown": 5.154055799999894
+            },
+            "GLFT": {
+              "net_pnl": -4.760030521999072,
+              "sharpe": -244.46067024577783,
+              "fills": 1124,
+              "fills_per_hour": 562.0836099369782,
+              "max_drawdown": 5.0211481399986555
+            }
+          },
+          {
+            "gamma": 0.0003,
+            "AS": {
+              "net_pnl": -4.408154506999322,
+              "sharpe": -237.31579290880597,
+              "fills": 1132,
+              "fills_per_hour": 566.0842050254976,
+              "max_drawdown": 4.69752874499976
+            },
+            "GLFT": {
+              "net_pnl": -4.504714797000748,
+              "sharpe": -240.88598171087975,
+              "fills": 1136,
+              "fills_per_hour": 568.0845025697573,
+              "max_drawdown": 4.770724990000691
+            }
+          },
+          {
+            "gamma": 0.001,
+            "AS": {
+              "net_pnl": -2.8101941023651555,
+              "sharpe": -244.95836811963005,
+              "fills": 1158,
+              "fills_per_hour": 579.0861390631857,
+              "max_drawdown": 2.967732427267052
+            },
+            "GLFT": {
+              "net_pnl": -3.6335963619998193,
+              "sharpe": -234.0167699010301,
+              "fills": 1181,
+              "fills_per_hour": 590.587849942679,
+              "max_drawdown": 3.8354256399996727
+            }
+          },
+          {
+            "gamma": 0.003,
+            "AS": {
+              "net_pnl": -1.7692383423868359,
+              "sharpe": -262.9925751769392,
+              "fills": 991,
+              "fills_per_hour": 495.5737165903428,
+              "max_drawdown": 1.8510712951766868
+            },
+            "GLFT": {
+              "net_pnl": -3.032679519999183,
+              "sharpe": -257.70445871371504,
+              "fills": 1170,
+              "fills_per_hour": 585.0870316959648,
+              "max_drawdown": 3.177578989999059
+            }
+          },
+          {
+            "gamma": 0.01,
+            "AS": {
+              "net_pnl": -1.2380992783870433,
+              "sharpe": -324.2792076615835,
+              "fills": 679,
+              "fills_per_hour": 339.55050813808555,
+              "max_drawdown": 1.2938734522677753
+            },
+            "GLFT": {
+              "net_pnl": -2.2347551299998636,
+              "sharpe": -252.4504222663642,
+              "fills": 1114,
+              "fills_per_hour": 557.0828660763289,
+              "max_drawdown": 2.3637796799998916
+            }
+          },
+          {
+            "gamma": 0.03,
+            "AS": {
+              "net_pnl": -0.41958506999987866,
+              "sharpe": -181.40165354148925,
+              "fills": 318,
+              "fills_per_hour": 159.02365476864685,
+              "max_drawdown": 0.4895586449998927
+            },
+            "GLFT": {
+              "net_pnl": -1.8574484973868528,
+              "sharpe": -274.1586525647076,
+              "fills": 1009,
+              "fills_per_hour": 504.57505553951154,
+              "max_drawdown": 1.9384813801767051
+            }
+          },
+          {
+            "gamma": 0.1,
+            "AS": {
+              "net_pnl": -0.05002503499997685,
+              "sharpe": -58.41517995371845,
+              "fills": 36,
+              "fills_per_hour": 18.002677898337378,
+              "max_drawdown": 0.09112344499997119
+            },
+            "GLFT": {
+              "net_pnl": -1.3325571399996603,
+              "sharpe": -289.4743238307879,
+              "fills": 861,
+              "fills_per_hour": 430.5640464019023,
+              "max_drawdown": 1.4162804549996626
+            }
+          },
+          {
+            "gamma": 0.3,
+            "AS": {
+              "net_pnl": -0.023884894999993384,
+              "sharpe": -86.70432845878574,
+              "fills": 4,
+              "fills_per_hour": 2.0002975442597086,
+              "max_drawdown": 0.02744200999999504
+            },
+            "GLFT": {
+              "net_pnl": -1.0813527363659903,
+              "sharpe": -318.74388350379974,
+              "fills": 711,
+              "fills_per_hour": 355.5528884921632,
+              "max_drawdown": 1.155758447267639
+            }
+          },
+          {
+            "gamma": 1.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": -0.6549010449999733,
+              "sharpe": -223.65820204798501,
+              "fills": 528,
+              "fills_per_hour": 264.03927584228154,
+              "max_drawdown": 0.7152308599999532
+            }
+          },
+          {
+            "gamma": 3.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": -0.30965684999997856,
+              "sharpe": -160.3533321208093,
+              "fills": 145,
+              "fills_per_hour": 72.51078597941444,
+              "max_drawdown": 0.341593614999972
+            }
+          },
+          {
+            "gamma": 10.0,
+            "AS": {
+              "net_pnl": 0.0,
+              "sharpe": 0.0,
+              "fills": 0,
+              "fills_per_hour": 0.0,
+              "max_drawdown": 0.0
+            },
+            "GLFT": {
+              "net_pnl": 0.011862789999995627,
+              "sharpe": 19.613829205797696,
+              "fills": 22,
+              "fills_per_hour": 11.001636493428398,
+              "max_drawdown": 0.029506815000018713
+            }
+          }
+        ],
+        "seconds": 45.39654680000058
+      },
+      "oos": [
+        {
+          "strategy": "NoTrade",
+          "fills": 0,
+          "taker_fills": 0,
+          "orders_sent": 0,
+          "cancels_sent": 0,
+          "rejects": 0,
+          "maker_qty": 0.0,
+          "fill_ratio": 0.0,
+          "turnover": 0.0,
+          "fees": 0.0,
+          "maker_fees": 0.0,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": 0.0,
+          "gross_pnl": 0.0,
+          "edge": 0.0,
+          "edge_per_fill_usd": 0.0,
+          "adverse_selection_cost": 0.0,
+          "adverse_bps": 0.0,
+          "inventory_pnl": 0.0,
+          "markout_1000ms": 0.0,
+          "adverse_1000ms": 0.0,
+          "markout_5000ms": 0.0,
+          "adverse_5000ms": 0.0,
+          "markout_30000ms": 0.0,
+          "adverse_30000ms": 0.0,
+          "sharpe": 0.0,
+          "max_drawdown": 0.0,
+          "pnl_per_hour": 0.0,
+          "fills_per_hour": 0.0,
+          "max_abs_position": 0.0,
+          "mean_abs_position": 0.0,
+          "maker_turnover": 0.0,
+          "breakeven_maker_fee_bps": null
+        },
+        {
+          "strategy": "FixedSpread",
+          "fills": 1827,
+          "taker_fills": 1,
+          "orders_sent": 3821,
+          "cancels_sent": 1747,
+          "rejects": 296,
+          "maker_qty": 1.7850354156667523,
+          "fill_ratio": 0.46716446366576736,
+          "turnover": 125272.40235918577,
+          "fees": -6.248715204579305,
+          "maker_fees": -6.260232637645651,
+          "taker_fees": 0.011517433066369383,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -2.8941256096511907,
+          "gross_pnl": -9.142840814230496,
+          "edge": 0.028633726092351815,
+          "edge_per_fill_usd": 1.5672537543706523e-05,
+          "markout_1000ms": -4.531642926504272,
+          "adverse_1000ms": 4.560276652596624,
+          "markout_5000ms": -6.5238338480910425,
+          "adverse_5000ms": 6.552467574183394,
+          "markout_30000ms": -10.370846737654944,
+          "adverse_30000ms": 10.399480463747292,
+          "adverse_selection_cost": 6.552467574183394,
+          "adverse_bps": 0.5233405812094267,
+          "inventory_pnl": -9.171474540322848,
+          "sharpe": -164.79643709295704,
+          "max_drawdown": 3.3622028230027183,
+          "pnl_per_hour": -1.4472776853597134,
+          "fills_per_hour": 913.635649515185,
+          "max_abs_position": 0.010000000000000002,
+          "mean_abs_position": 0.006268344015104946,
+          "maker_turnover": 125204.65275291301,
+          "breakeven_maker_fee_bps": -0.7311516022781255
+        },
+        {
+          "strategy": "InventorySkew",
+          "fills": 1575,
+          "taker_fills": 1,
+          "orders_sent": 3898,
+          "cancels_sent": 2096,
+          "rejects": 268,
+          "maker_qty": 1.557,
+          "fill_ratio": 0.39943560800413724,
+          "turnover": 109419.9666,
+          "fees": -5.424641844000011,
+          "maker_fees": -5.460462765,
+          "taker_fees": 0.035820921000000006,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -3.5059581559989077,
+          "gross_pnl": -8.930599999998918,
+          "edge": 0.05890108271574094,
+          "edge_per_fill_usd": 3.739751283539107e-05,
+          "markout_1000ms": -4.731211193366825,
+          "adverse_1000ms": 4.790112276082565,
+          "markout_5000ms": -6.596499999998982,
+          "adverse_5000ms": 6.655401082714723,
+          "markout_30000ms": -9.647086913269302,
+          "adverse_30000ms": 9.705987995985042,
+          "adverse_selection_cost": 6.655401082714723,
+          "adverse_bps": 0.6094173121529127,
+          "inventory_pnl": -8.989501082714659,
+          "sharpe": -226.2802051345216,
+          "max_drawdown": 3.7242452799993413,
+          "pnl_per_hour": -1.753239385347084,
+          "fills_per_hour": 787.6169392372284,
+          "max_abs_position": 0.011000000000000003,
+          "mean_abs_position": 0.004591683285501371,
+          "maker_turnover": 109209.2553,
+          "breakeven_maker_fee_bps": -0.8210312300333868
+        },
+        {
+          "strategy": "AS",
+          "fills": 427,
+          "taker_fills": 1,
+          "orders_sent": 6933,
+          "cancels_sent": 6524,
+          "rejects": 19,
+          "maker_qty": 0.42547783138342266,
+          "fill_ratio": 0.061369945389208536,
+          "turnover": 29879.317403835852,
+          "fees": -1.4858972361371243,
+          "maker_fees": -1.4921320897248225,
+          "taker_fees": 0.0062348535876986305,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.6900989280093583,
+          "gross_pnl": -2.1759961641464827,
+          "edge": 0.32182389156935004,
+          "edge_per_fill_usd": 0.0007536859287338408,
+          "markout_1000ms": -1.4129143819191632,
+          "adverse_1000ms": 1.7347382734885133,
+          "markout_5000ms": -1.733320549842335,
+          "adverse_5000ms": 2.055144441411685,
+          "markout_30000ms": -2.0985653831749205,
+          "adverse_30000ms": 2.4203892747442706,
+          "adverse_selection_cost": 2.055144441411685,
+          "adverse_bps": 0.6886603590807743,
+          "inventory_pnl": -2.4978200557158328,
+          "sharpe": -233.86604653721778,
+          "max_drawdown": 0.6919059976432071,
+          "pnl_per_hour": -0.3451007018727767,
+          "fills_per_hour": 213.53170352653748,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.0006015896944336915,
+          "maker_turnover": 29842.64179449645,
+          "breakeven_maker_fee_bps": -0.7312459241247959
+        },
+        {
+          "strategy": "GLFT",
+          "fills": 485,
+          "taker_fills": 1,
+          "orders_sent": 5427,
+          "cancels_sent": 4947,
+          "rejects": 22,
+          "maker_qty": 0.4834680983748981,
+          "fill_ratio": 0.08908570082455962,
+          "turnover": 33918.869204560244,
+          "fees": -1.6943839425659768,
+          "maker_fees": -1.6955890243957314,
+          "taker_fees": 0.0012050818297548488,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.6798035382394401,
+          "gross_pnl": -2.374187480805417,
+          "edge": 0.3517734049191247,
+          "edge_per_fill_usd": 0.0007253059895239684,
+          "markout_1000ms": -1.4967195233618602,
+          "adverse_1000ms": 1.848492928280985,
+          "markout_5000ms": -1.8598756912851047,
+          "adverse_5000ms": 2.211649096204229,
+          "markout_30000ms": -2.3316050548474876,
+          "adverse_30000ms": 2.6833784597666117,
+          "adverse_selection_cost": 2.211649096204229,
+          "adverse_bps": 0.6521772270236326,
+          "inventory_pnl": -2.7259608857245414,
+          "sharpe": -209.12426598540588,
+          "max_drawdown": 0.737571950093123,
+          "pnl_per_hour": -0.33995224258462603,
+          "fills_per_hour": 242.5360098603529,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.0006268274462215759,
+          "maker_turnover": 33911.78048791463,
+          "breakeven_maker_fee_bps": -0.700462355104506
+        },
+        {
+          "strategy": "GLFT+Hawkes+FV",
+          "fills": 387,
+          "taker_fills": 1,
+          "orders_sent": 43162,
+          "cancels_sent": 42790,
+          "rejects": 33,
+          "maker_qty": 0.3854778313834227,
+          "fill_ratio": 0.008930953880346393,
+          "turnover": 27074.700203835855,
+          "fees": -1.3456663761371237,
+          "maker_fees": -1.3519012297248225,
+          "taker_fees": 0.0062348535876986305,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.47292978800968744,
+          "gross_pnl": -1.8185961641468111,
+          "edge": 0.377523891569318,
+          "edge_per_fill_usd": 0.000975513931703664,
+          "markout_1000ms": -1.214914381919192,
+          "adverse_1000ms": 1.5924382734885103,
+          "markout_5000ms": -1.5011205498423958,
+          "adverse_5000ms": 1.878644441411714,
+          "markout_30000ms": -1.8005153831750342,
+          "adverse_30000ms": 2.1780392747443518,
+          "adverse_selection_cost": 1.878644441411714,
+          "adverse_bps": 0.6948157158619159,
+          "inventory_pnl": -2.196120055716129,
+          "sharpe": -188.03834380112482,
+          "max_drawdown": 0.4809951876435236,
+          "pnl_per_hour": -0.23650000768654053,
+          "fills_per_hour": 193.52873364114757,
+          "max_abs_position": 0.00220575503829706,
+          "mean_abs_position": 0.0005256725803900308,
+          "maker_turnover": 27038.024594496448,
+          "breakeven_maker_fee_bps": -0.6749128477773305
+        },
+        {
+          "strategy": "GLFT+HFV fee-aware",
+          "fills": 387,
+          "taker_fills": 1,
+          "orders_sent": 43162,
+          "cancels_sent": 42790,
+          "rejects": 33,
+          "maker_qty": 0.3854778313834227,
+          "fill_ratio": 0.008930953880346393,
+          "turnover": 27074.700203835855,
+          "fees": -1.3456663761371237,
+          "maker_fees": -1.3519012297248225,
+          "taker_fees": 0.0062348535876986305,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.47292978800968744,
+          "gross_pnl": -1.8185961641468111,
+          "edge": 0.377523891569318,
+          "edge_per_fill_usd": 0.000975513931703664,
+          "markout_1000ms": -1.214914381919192,
+          "adverse_1000ms": 1.5924382734885103,
+          "markout_5000ms": -1.5011205498423958,
+          "adverse_5000ms": 1.878644441411714,
+          "markout_30000ms": -1.8005153831750342,
+          "adverse_30000ms": 2.1780392747443518,
+          "adverse_selection_cost": 1.878644441411714,
+          "adverse_bps": 0.6948157158619159,
+          "inventory_pnl": -2.196120055716129,
+          "sharpe": -188.03834380112482,
+          "max_drawdown": 0.4809951876435236,
+          "pnl_per_hour": -0.23650000768654053,
+          "fills_per_hour": 193.52873364114757,
+          "max_abs_position": 0.00220575503829706,
+          "mean_abs_position": 0.0005256725803900308,
+          "maker_turnover": 27038.024594496448,
+          "breakeven_maker_fee_bps": null
+        }
+      ],
+      "stress": [
+        {
+          "strategy": "stress: latency 50+50ms",
+          "fills": 384,
+          "taker_fills": 0,
+          "orders_sent": 43851,
+          "cancels_sent": 43496,
+          "rejects": 103,
+          "maker_qty": 0.382,
+          "fill_ratio": 0.00871131787188662,
+          "turnover": 26792.2782,
+          "fees": -1.3396139100000004,
+          "maker_fees": -1.3396139100000002,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.487186090000048,
+          "gross_pnl": -1.8268000000000484,
+          "edge": 0.362800000000163,
+          "edge_per_fill_usd": 0.0009447916666670912,
+          "markout_1000ms": -1.2186999999997934,
+          "adverse_1000ms": 1.5814999999999562,
+          "markout_5000ms": -1.553599999999817,
+          "adverse_5000ms": 1.91639999999998,
+          "markout_30000ms": -1.7194999999998546,
+          "adverse_30000ms": 2.082300000000018,
+          "adverse_selection_cost": 1.91639999999998,
+          "adverse_bps": 0.7152807184571486,
+          "inventory_pnl": -2.1896000000002114,
+          "sharpe": -189.83011766029588,
+          "max_drawdown": 0.5323326200000911,
+          "pnl_per_hour": -0.24362921717129568,
+          "fills_per_hour": 192.0285108997433,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.00046236111111111114,
+          "maker_turnover": 26792.2782,
+          "breakeven_maker_fee_bps": -0.6818382469617862
+        },
+        {
+          "strategy": "stress: latency 150+150ms",
+          "fills": 389,
+          "taker_fills": 0,
+          "orders_sent": 43733,
+          "cancels_sent": 43502,
+          "rejects": 240,
+          "maker_qty": 0.388,
+          "fill_ratio": 0.008872018841609302,
+          "turnover": 27212.5341,
+          "fees": -1.3606267049999996,
+          "maker_fees": -1.360626705,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.5620732949998075,
+          "gross_pnl": -1.9226999999998071,
+          "edge": 0.31355000000020666,
+          "edge_per_fill_usd": 0.0008060411311059297,
+          "markout_1000ms": -1.3063999999997613,
+          "adverse_1000ms": 1.619949999999968,
+          "markout_5000ms": -1.6111999999997497,
+          "adverse_5000ms": 1.9247499999999564,
+          "markout_30000ms": -1.7718499999998458,
+          "adverse_30000ms": 2.0854000000000523,
+          "adverse_selection_cost": 1.9247499999999564,
+          "adverse_bps": 0.7073027425255322,
+          "inventory_pnl": -2.236250000000014,
+          "sharpe": -217.66662697929365,
+          "max_drawdown": 0.586700659999857,
+          "pnl_per_hour": -0.28107837983157596,
+          "fills_per_hour": 194.52888213541706,
+          "max_abs_position": 0.003,
+          "mean_abs_position": 0.00047458333333333337,
+          "maker_turnover": 27212.5341,
+          "breakeven_maker_fee_bps": -0.7065494131984595
+        },
+        {
+          "strategy": "stress: optimistic queue",
+          "fills": 502,
+          "taker_fills": 0,
+          "orders_sent": 52342,
+          "cancels_sent": 51856,
+          "rejects": 29,
+          "maker_qty": 0.502,
+          "fill_ratio": 0.009590768407785336,
+          "turnover": 35206.0091,
+          "fees": -1.760300455000001,
+          "maker_fees": -1.760300455,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": 0.9968004550001497,
+          "gross_pnl": -0.7634999999998513,
+          "edge": 0.5802000000000699,
+          "edge_per_fill_usd": 0.001155776892430418,
+          "markout_1000ms": -0.7449999999999564,
+          "adverse_1000ms": 1.3252000000000264,
+          "markout_5000ms": -0.7638999999998342,
+          "adverse_5000ms": 1.344099999999904,
+          "markout_30000ms": -0.7884999999998836,
+          "adverse_30000ms": 1.3686999999999534,
+          "adverse_selection_cost": 1.344099999999904,
+          "adverse_bps": 0.38178141583219216,
+          "inventory_pnl": -1.343699999999921,
+          "sharpe": 782.3587884746021,
+          "max_drawdown": 0.015239094999997205,
+          "pnl_per_hour": 0.49847423707777433,
+          "fills_per_hour": 251.0372720616436,
+          "max_abs_position": 0.002,
+          "mean_abs_position": 2.3888888888888885e-05,
+          "maker_turnover": 35206.0091,
+          "breakeven_maker_fee_bps": -0.21686638716452847
+        },
+        {
+          "strategy": "stress: requote 500ms",
+          "fills": 390,
+          "taker_fills": 0,
+          "orders_sent": 16778,
+          "cancels_sent": 16390,
+          "rejects": 12,
+          "maker_qty": 0.388,
+          "fill_ratio": 0.023125521516274724,
+          "turnover": 27213.3136,
+          "fees": -1.3606656800000005,
+          "maker_fees": -1.36066568,
+          "taker_fees": 0.0,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": -0.501134319999945,
+          "gross_pnl": -1.8617999999999455,
+          "edge": 0.35215000000013963,
+          "edge_per_fill_usd": 0.0009029487179490759,
+          "markout_1000ms": -1.2529999999997816,
+          "adverse_1000ms": 1.6051499999999215,
+          "markout_5000ms": -1.5190999999997439,
+          "adverse_5000ms": 1.8712499999998835,
+          "markout_30000ms": -1.751449999999779,
+          "adverse_30000ms": 2.1035999999999184,
+          "adverse_selection_cost": 1.8712499999998835,
+          "adverse_bps": 0.6876229875952641,
+          "inventory_pnl": -2.213950000000085,
+          "sharpe": -189.1138435446434,
+          "max_drawdown": 0.5395901249999975,
+          "pnl_per_hour": -0.25060436778735645,
+          "fills_per_hour": 195.0289563825518,
+          "max_abs_position": 0.002,
+          "mean_abs_position": 0.00045583333333333337,
+          "maker_turnover": 27213.3136,
+          "breakeven_maker_fee_bps": -0.6841504226078318
+        },
+        {
+          "strategy": "stress: FixedSpread optimistic queue",
+          "fills": 18089,
+          "taker_fills": 1,
+          "orders_sent": 20019,
+          "cancels_sent": 1612,
+          "rejects": 323,
+          "maker_qty": 18.089,
+          "fill_ratio": 0.9035915879913411,
+          "turnover": 1269261.8642,
+          "fees": -63.35492792199977,
+          "maker_fees": -63.43851019,
+          "taker_fees": 0.083582268,
+          "final_position": 0.0,
+          "halted": false,
+          "net_pnl": 54.185927921959255,
+          "gross_pnl": -9.169000000040512,
+          "edge": 0.8752000000135305,
+          "edge_per_fill_usd": 4.838299519119523e-05,
+          "markout_1000ms": -3.3725499999864543,
+          "adverse_1000ms": 4.247749999999986,
+          "markout_5000ms": -5.730999999986176,
+          "adverse_5000ms": 6.606199999999706,
+          "markout_30000ms": -8.514499999986743,
+          "adverse_30000ms": 9.389700000000271,
+          "adverse_selection_cost": 6.606199999999706,
+          "adverse_bps": 0.052067742292607154,
+          "inventory_pnl": -10.044200000054042,
+          "sharpe": 1611.1139662961154,
+          "max_drawdown": 0.5342988600002521,
+          "pnl_per_hour": 27.096987110871506,
+          "fills_per_hour": 9045.843056420461,
+          "max_abs_position": 0.010000000000000002,
+          "mean_abs_position": 0.00752527777777778,
+          "maker_turnover": 1268770.2038,
+          "breakeven_maker_fee_bps": -0.07292559551232199
+        }
+      ],
+      "bootstrap": {
+        "NoTrade": {
+          "pnl": 0.0,
+          "pnl_ci": [
+            0.0,
+            0.0
+          ],
+          "sharpe_ci": [
+            0.0,
+            0.0
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 2.8941256096511907,
+          "diff_ci": [
+            1.0249802872782579,
+            5.410254236377423
+          ],
+          "p_better_than_baseline": 1.0
+        },
+        "FixedSpread": {
+          "pnl": -2.8941256096511907,
+          "pnl_ci": [
+            -5.4102542363774235,
+            -1.0249802872782579
+          ],
+          "sharpe_ci": [
+            -294.5421001413786,
+            -61.78393197340822
+          ],
+          "p_positive": 0.0
+        },
+        "InventorySkew": {
+          "pnl": -3.505958155998908,
+          "pnl_ci": [
+            -5.744223503748471,
+            -1.8009650256239287
+          ],
+          "sharpe_ci": [
+            -326.1366691579501,
+            -133.42300471375003
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": -0.6118325463477174,
+          "diff_ci": [
+            -1.4098691258446285,
+            0.4917194306993189
+          ],
+          "p_better_than_baseline": 0.1685
+        },
+        "AS": {
+          "pnl": -0.6900989280093583,
+          "pnl_ci": [
+            -1.2463682155763973,
+            -0.2696946455448909
+          ],
+          "sharpe_ci": [
+            -332.84179390105623,
+            -117.21888300427719
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 2.2040266816418326,
+          "diff_ci": [
+            0.49256951048134795,
+            4.434199896905186
+          ],
+          "p_better_than_baseline": 0.9945
+        },
+        "GLFT": {
+          "pnl": -0.6798035382394401,
+          "pnl_ci": [
+            -1.336834082097564,
+            -0.27750791438175726
+          ],
+          "sharpe_ci": [
+            -331.28104162435784,
+            -106.36867676203205
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 2.2143220714117504,
+          "diff_ci": [
+            0.48050115530594284,
+            4.346146249989956
+          ],
+          "p_better_than_baseline": 0.994
+        },
+        "GLFT+Hawkes+FV": {
+          "pnl": -0.47292978800968744,
+          "pnl_ci": [
+            -0.8984930161672464,
+            -0.17788265719717933
+          ],
+          "sharpe_ci": [
+            -285.35722128378535,
+            -86.12206710634051
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 2.4211958216415033,
+          "diff_ci": [
+            0.7250992420767458,
+            4.62671129244942
+          ],
+          "p_better_than_baseline": 0.999
+        },
+        "GLFT+HFV fee-aware": {
+          "pnl": -0.47292978800968744,
+          "pnl_ci": [
+            -0.8984930161672464,
+            -0.17788265719717933
+          ],
+          "sharpe_ci": [
+            -285.35722128378535,
+            -86.12206710634051
+          ],
+          "p_positive": 0.0,
+          "diff_vs_baseline": 2.4211958216415033,
+          "diff_ci": [
+            0.7250992420767458,
+            4.62671129244942
+          ],
+          "p_better_than_baseline": 0.999
+        }
+      },
+      "oos_seconds": 20.07827830000133
+    }
+  },
+  "seconds": 167.6532826423645
+}

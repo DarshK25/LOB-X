@@ -1,56 +1,23 @@
 """
-run_collector.py — main data recording process for Phase 1.
+run_collector.py — record live Binance L2 depth diffs and trades to Parquet.
 
-PURPOSE
-───────
-This script is your RECORDER — it runs continuously and writes every depth
-event and trade to Parquet files on disk.  Leave it running in Terminal 1.
-Read the data in real time from Terminal 2 using the other scripts.
+The local book follows Binance's documented sync procedure (REST snapshot +
+buffered diff stream, sequence-checked, resynced on any gap). Optionally every
+applied level change is mirrored into the C++ book (requires lobx_cpp).
 
 USAGE
-─────
-  # Basic — no C++ engine yet (most common case right now):
   python scripts/run_collector.py --no-engine-mirror
+  python scripts/run_collector.py --symbol ETHUSDT --duration-seconds 7200
+  python scripts/run_collector.py --log-level WARNING --log-file data/raw/collector.log
 
-  # Full pipeline — after running setup_cpp_build.py successfully:
-  python scripts/run_collector.py
+OUTPUT (data/raw/, rotated at UTC midnight)
+  depth_YYYY-MM-DD.parquet    one row per price-level change
+  trades_YYYY-MM-DD.parquet   one row per trade
 
-  # Different symbol:
-  python scripts/run_collector.py --symbol ETHUSDT --no-engine-mirror
-
-  # Custom data directory:
-  python scripts/run_collector.py --data-dir data/live --no-engine-mirror
-
-  # Quiet logging (less output, still shows heartbeat):
-  python scripts/run_collector.py --no-engine-mirror --log-level WARNING
-
-LOG LINES TO WATCH FOR
-──────────────────────
-  "Connected to wss://..."              → WebSocket connected
-  "[BTCUSDT] Fetching REST snapshot"   → sync started (takes ~1 second)
-  "[BTCUSDT] Fully synced."            → book is LIVE; Parquet writes begin
-  "[BTCUSDT] heartbeat | bid=..."      → periodic flush + live book state
-  "Disconnected ... Retrying in Ns"    → auto-reconnect (normal after 24h)
-
-WHAT GETS WRITTEN
-─────────────────
-  data/raw/
-    trades_YYYY-MM-DD.parquet   — one row per individual trade
-    depth_YYYY-MM-DD.parquet    — one row per price-level change
-
-Files rotate at UTC midnight.  New files are created automatically.
-Data is readable within 30 s of the first events (heartbeat flush interval).
-
-OTHER TERMINALS
-───────────────
-  See live data updating in real time:
-    python scripts/watch_live.py
-
-  Read what's been collected so far:
-    python scripts/read_data.py
-
-  Verify C++ engine matches real book (after C++ build):
-    python scripts/verify_engine_mirror.py
+Row groups are flushed on every heartbeat, but the Parquet footer is only
+written when the file is closed (rotation or shutdown), so a file is readable
+after the collector stops. Replay a capture with
+``lobx.backtest.data.load_capture(depth_path, trades_path)``.
 """
 from __future__ import annotations
 
@@ -71,7 +38,7 @@ from lobx.market_data.collector import Collector
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="LOB-X Phase 1 — live Binance data collector"
+        description="LOB-X live Binance data collector"
     )
     p.add_argument("--symbol",   default="BTCUSDT",
                    help="Binance trading pair (default: BTCUSDT)")
@@ -95,6 +62,7 @@ async def _main(args: argparse.Namespace) -> None:
         symbol=args.symbol,
         data_dir=args.data_dir,
         enable_engine_mirror=not args.no_engine_mirror,
+        enable_storage=True,
         heartbeat_s=args.heartbeat,
     )
 
@@ -113,8 +81,8 @@ async def _main(args: argparse.Namespace) -> None:
             await run_task
         except asyncio.CancelledError:
             pass
-        print("\nShutting down — flushing Parquet buffers…")
-        collector.close()
+        print("\nShutting down — flushing buffers…")
+        await collector.close_async()
         print("Done. Data written to:", args.data_dir)
 
 

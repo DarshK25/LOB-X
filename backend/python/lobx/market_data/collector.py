@@ -1,95 +1,26 @@
 """
-Collector — the central orchestrator of the Phase 1 data pipeline.
+Collector: one Binance websocket connection feeding a synced local book.
 
-╔══════════════════════════════════════════════════════════════════════╗
-║  DATA FLOW (read this first — it answers the "how does it connect"  ║
-║  question completely)                                                ║
-╚══════════════════════════════════════════════════════════════════════╝
+  <sym>@depth@100ms ─► DepthStreamManager ─► LocalOrderBook (SortedDict levels)
+                         buffer until the REST snapshot arrives, then apply
+                         diffs with sequence checks; resync on any gap
+                           ├─► RotatingParquetWriter   depth rows (optional)
+                           ├─► EngineMirrorBridge      C++ book mirror (optional)
+                           └─► on_book_update callbacks (dashboard, LiveSimRunner)
+  <sym>@trade ─────────► TradeTick
+                           ├─► RotatingParquetWriter   trade rows (optional)
+                           └─► on_trade callbacks
 
-  Binance Exchange (real live market)
-         │
-         │ WebSocket frames arrive ~10× / second
-         │ Two streams in one connection:
-         │   btcusdt@depth@100ms  →  incremental depth diff events
-         │   btcusdt@trade        →  every individual match
-         ▼
-  BinanceWSClient
-    receive loop (async for frame in websocket)
-    parse JSON → call _on_message(msg)
-         │
-         │ msg = {"stream": "btcusdt@depth@100ms", "data": {...}}
-         │
-         ├─── "@depth" in stream ──────────────────────────────────────────►
-         │                                                                  │
-         │    DepthStreamManager.handle_event(event)                        │
-         │      Phase A (before sync):                                      │
-         │        buffer this event; kick off REST snapshot fetch           │
-         │      Phase B (after sync):                                       │
-         │        apply diff to LocalOrderBook (SortedDict bids/asks)       │
-         │        check U == prev_u + 1; resync if broken                   │
-         │                │                                                 │
-         │                ▼                                                 │
-         │    ORDER BOOK #1 — LocalOrderBook (Python side)                  │
-         │    ┌────────────────────────────────────────────┐               │
-         │    │  bids: SortedDict{price → total_qty}       │               │
-         │    │  asks: SortedDict{price → total_qty}       │               │
-         │    │  best_bid(), best_ask(), mid_price()       │               │
-         │    └────────────────────────────────────────────┘               │
-         │      ↑ This is the REFERENCE book. You can                      │
-         │        compare it against Binance's live UI                     │
-         │        to prove the sync algorithm is correct.                  │
-         │                │                                                 │
-         │                ├──► RotatingParquetWriter (depth rows)           │
-         │                │      one row per price level that changed       │
-         │                │      flushed every 500 rows OR 30-sec heartbeat │
-         │                │                                                 │
-         │                └──► EngineMirrorBridge (if C++ built)            │
-         │                       convert float→ticks, qty→lots              │
-         │                       cancel old synthetic order                  │
-         │                       insert new synthetic order                  │
-         │                                │                                 │
-         │                                ▼                                 │
-         │              ORDER BOOK #2 — lobx_cpp.OrderBook (C++ side)       │
-         │              ┌─────────────────────────────────────────────────┐ │
-         │              │  std::map<Price, PriceLevel> bids (descending)  │ │
-         │              │  std::map<Price, PriceLevel> asks (ascending)   │ │
-         │              │  best_bid(), best_ask(), mid_price()             │ │
-         │              └─────────────────────────────────────────────────┘ │
-         │                ↑ This is the ENGINE book. Phase 2 strategies     │
-         │                  (AvellanedaStoikov, AlmgrenChriss) will quote   │
-         │                  against THIS book, not the Python one.          │
-         │                                                                  │
-         │                ↓ on_book_update callbacks fire here ─────────────┘
-         │                  (watch_live.py, verify_engine_mirror.py,
-         │                   later: StrategyRunner)
-         │
-         └─── "@trade" in stream ─────────────────────────────────────────►
-                                                                            │
-              parse_trade_event(event) → TradeTick                          │
-                │                                                           │
-                ├──► RotatingParquetWriter (trade rows)                     │
-                │      one row per trade (price, qty, taker side, time)     │
-                │                                                           │
-                └──► on_trade callbacks fire here ─────────────────────────┘
-                       (watch_live.py prints these in real time;
-                        Phase 3 Hawkes calibration reads the Parquet file)
-
-WHY TWO ORDER BOOKS?
-────────────────────
-LocalOrderBook is pure Python, easy to inspect from a REPL, and lets you
-compare best_bid/best_ask against Binance's own UI — that's your correctness
-proof for the sync algorithm.
-
-lobx_cpp.OrderBook is your actual matching engine — the thing your Phase 2
-strategy calls add_limit_order() and cancel() on to place and cancel quotes.
-It runs at C++ speed because strategies call it thousands of times per second.
-
-The EngineMirrorBridge keeps both in sync: every depth event goes to both.
+The local Python book is the reference used by every consumer. The C++ mirror
+loads the same snapshot and applies the same level changes without matching;
+it exists to exercise lobx_cpp on real depth, not to drive strategies.
+Strategies and paper trading run in ``lobx.execution.simulator``.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -101,6 +32,7 @@ from lobx.storage.parquet_writer import (
     TRADE_SCHEMA,
     RotatingParquetWriter,
 )
+from lobx.storage.postgres_writer import PostgresTradeWriter
 
 if TYPE_CHECKING:
     from lobx.market_data.engine_mirror import EngineMirrorBridge
@@ -121,7 +53,7 @@ TradeCallback = Callable[[TradeTick], None]
 
 class Collector:
     """
-    Orchestrates the full Phase 1 data pipeline.
+    Orchestrates the live data pipeline.
 
     Parameters
     ----------
@@ -151,13 +83,16 @@ class Collector:
         enable_engine_mirror: bool = True,
         flush_every: int = 500,
         heartbeat_s: int = 30,
+        enable_storage: bool = False,
     ) -> None:
         self.symbol = symbol.upper()
         self._heartbeat_s = heartbeat_s
+        self._enable_storage = enable_storage
 
         # ── Order Book #1: Python reference book ──────────────────────────────
         self.depth_mgr = DepthStreamManager(self.symbol)
         self._written_snapshot_generation = 0
+        self._mirror_generation = 0
 
         # ── Order Book #2: C++ engine book (optional) ─────────────────────────
         self.engine_mirror: EngineMirrorBridge | None = None
@@ -172,15 +107,19 @@ class Collector:
                     "Build the C++ extension to enable it (see docs/architecture.md)."
                 )
 
-        # ── Storage ───────────────────────────────────────────────────────────
-        # flush_every=500: at BTC/USDT rates (~50 depth rows/s after sync),
-        # this flushes every ~10 s.  Files stay readable from another terminal.
-        self._trade_writer = RotatingParquetWriter(
-            data_dir, "trades", TRADE_SCHEMA, flush_every=flush_every
-        )
-        self._depth_writer = RotatingParquetWriter(
-            data_dir, "depth", DEPTH_SCHEMA, flush_every=flush_every
-        )
+        # ── Storage (optional — disabled for pure live streaming) ─────────────
+        if enable_storage:
+            self._trade_writer = RotatingParquetWriter(
+                data_dir, "trades", TRADE_SCHEMA, flush_every=flush_every
+            )
+            self._depth_writer = RotatingParquetWriter(
+                data_dir, "depth", DEPTH_SCHEMA, flush_every=flush_every
+            )
+            self._pg_writer = PostgresTradeWriter(database_url=os.environ.get("DATABASE_URL"))
+        else:
+            self._trade_writer = None
+            self._depth_writer = None
+            self._pg_writer = None
 
         # ── Callbacks (register with on_book_update / on_trade) ───────────────
         # These fire AFTER storage writes, so callbacks always see consistent state.
@@ -194,6 +133,10 @@ class Collector:
             on_message=self._on_message,
             on_disconnect=self._on_disconnect,
         )
+
+        self.ws_status = "Initializing..."
+        self.ws_error: str | None = None
+
 
     # ── Callback registration (call BEFORE run()) ─────────────────────────────
 
@@ -233,18 +176,39 @@ class Collector:
         """
         Start the pipeline.  Blocks until stop() is called or KeyboardInterrupt.
 
-        Runs three concurrent asyncio tasks:
+        Runs concurrent asyncio tasks:
           1. ws-receive        : WebSocket receive loop (reconnects automatically)
-          2. parquet-heartbeat : force-flush Parquet + log live book state every 30 s
+          2. parquet-heartbeat : force-flush Parquet + log live book state every N s
         """
         logger.info("Collector starting for %s", self.symbol)
+
+        self.ws_status = "Connecting..."
         ws_task = asyncio.create_task(self._ws.run())
         hb_task = asyncio.create_task(self._heartbeat())
+
+        db_task = None
+        if self._pg_writer is not None:
+            async def _connect_db():
+                try:
+                    await self._pg_writer.connect()
+                    if self._pg_writer.is_enabled:
+                        logger.info("PostgreSQL trade writer connected.")
+                    else:
+                        logger.info("PostgreSQL writer disabled.")
+                except Exception as exc:
+                    logger.warning("PostgreSQL connect raised unexpectedly: %s", exc)
+
+            db_task = asyncio.create_task(_connect_db())
+
         try:
             await asyncio.gather(ws_task, hb_task)
         except asyncio.CancelledError:
-            ws_task.cancel()
-            hb_task.cancel()
+            # Cancelling gather already cancels its children. A second cancel
+            # interrupts the WebSocket context's asynchronous TLS close.
+            if db_task and not db_task.done():
+                db_task.cancel()
+            await asyncio.gather(ws_task, hb_task, *([db_task] if db_task else []),
+                                 return_exceptions=True)
             raise
 
     def stop(self) -> None:
@@ -256,15 +220,19 @@ class Collector:
         await self._ws.force_disconnect()
 
     def close(self) -> None:
-        """
-        Flush all buffers and close Parquet file handles.
-        ALWAYS call this on shutdown (the run_collector.py entrypoint does it
-        in a try/finally block — make sure your own scripts do the same).
-        """
-        logger.info("Flushing and closing Parquet writers…")
-        self._trade_writer.close()
-        self._depth_writer.close()
-        logger.info("Collector closed.")
+        """Flush all buffers and close Parquet file handles if storage is enabled."""
+        if self._trade_writer is not None:
+            self._trade_writer.close()
+        if self._depth_writer is not None:
+            self._depth_writer.close()
+
+    async def close_async(self) -> None:
+        """Flush Postgres buffer and close pool if storage is enabled."""
+        self.close()
+        if self._pg_writer is not None:
+            await self._pg_writer.close()
+        logger.info("Collector fully closed (Parquet + PostgreSQL).")
+
 
     # ── Message routing ───────────────────────────────────────────────────────
 
@@ -277,6 +245,8 @@ class Collector:
 
         We strip the envelope and route by stream name.
         """
+        self.ws_status = "Connected"
+        self.ws_error = None
         stream: str = msg.get("stream", "")
         event: dict = msg.get("data", msg)  # fallback: some modes omit the envelope
 
@@ -287,6 +257,8 @@ class Collector:
 
     async def _on_disconnect(self, exc: Exception) -> None:
         """Invalidate depth state before BinanceWSClient reconnects."""
+        self.ws_status = "Disconnected"
+        self.ws_error = str(exc)
         self.depth_mgr.mark_desynced(f"WebSocket disconnected: {exc}")
 
     # ── Depth pipeline ────────────────────────────────────────────────────────
@@ -317,40 +289,47 @@ class Collector:
         # synced.  Diff updates alone cannot reconstruct the initial book in a
         # later offline analysis, which made quote-distance calibration depend
         # on an unknown starting state.
-        if self.depth_mgr.sync_generation > self._written_snapshot_generation:
+        if self._depth_writer is not None and self.depth_mgr.sync_generation > self._written_snapshot_generation:
             self._write_depth_snapshot(event)
             self._written_snapshot_generation = self.depth_mgr.sync_generation
 
-        # ── Step 3: write to Parquet ──────────────────────────────────────────
-        event_time = int(event["E"])
-        symbol     = str(event["s"])
-        first_uid  = int(event["U"])
-        final_uid  = int(event["u"])
+        # ── Step 3: write to Parquet (if enabled) ─────────────────────────────
+        if self._depth_writer is not None:
+            event_time = int(event["E"])
+            symbol     = str(event["s"])
+            first_uid  = int(event["U"])
+            final_uid  = int(event["u"])
 
-        for price_s, qty_s in event.get("b", []):
-            self._depth_writer.write({
-                "event_time":      event_time,
-                "symbol":          symbol,
-                "side":            "bid",
-                "price":           float(price_s),
-                "qty":             float(qty_s),
-                "first_update_id": first_uid,
-                "final_update_id": final_uid,
-            })
-        for price_s, qty_s in event.get("a", []):
-            self._depth_writer.write({
-                "event_time":      event_time,
-                "symbol":          symbol,
-                "side":            "ask",
-                "price":           float(price_s),
-                "qty":             float(qty_s),
-                "first_update_id": first_uid,
-                "final_update_id": final_uid,
-            })
+            for price_s, qty_s in event.get("b", []):
+                self._depth_writer.write({
+                    "event_time":      event_time,
+                    "symbol":          symbol,
+                    "side":            "bid",
+                    "price":           float(price_s),
+                    "qty":             float(qty_s),
+                    "first_update_id": first_uid,
+                    "final_update_id": final_uid,
+                })
+            for price_s, qty_s in event.get("a", []):
+                self._depth_writer.write({
+                    "event_time":      event_time,
+                    "symbol":          symbol,
+                    "side":            "ask",
+                    "price":           float(price_s),
+                    "qty":             float(qty_s),
+                    "first_update_id": first_uid,
+                    "final_update_id": final_uid,
+                })
 
         # ── Step 4: update C++ engine ─────────────────────────────────────────
         if self.engine_mirror is not None:
-            self.engine_mirror.apply_depth_event(event)
+            if self.depth_mgr.sync_generation > self._mirror_generation:
+                # The local book already includes this event.
+                book = self.depth_mgr.book
+                self.engine_mirror.load_snapshot(book.bids.items(), book.asks.items())
+                self._mirror_generation = self.depth_mgr.sync_generation
+            else:
+                self.engine_mirror.apply_depth_event(event)
 
         # ── Step 5: fire callbacks ────────────────────────────────────────────
         for cb in self._book_cbs:
@@ -361,6 +340,8 @@ class Collector:
 
     def _write_depth_snapshot(self, event: dict) -> None:
         """Write the complete, already-synced local book as a Parquet baseline."""
+        if self._depth_writer is None:
+            return
         event_time = int(event["E"])
         first_uid = int(event["U"])
         final_uid = int(event["u"])
@@ -389,7 +370,10 @@ class Collector:
         3.  Fire on_trade callbacks.
         """
         tick = parse_trade_event(event)
-        self._trade_writer.write(tick.to_dict())
+        if self._trade_writer is not None:
+            self._trade_writer.write(tick.to_dict())
+        if self._pg_writer is not None:
+            self._pg_writer.write(tick)
         for cb in self._trade_cbs:
             try:
                 cb(tick)
@@ -401,13 +385,15 @@ class Collector:
     async def _heartbeat(self) -> None:
         """
         Every heartbeat_s seconds:
-          1. Force-flush both Parquet writers (so files are always readable).
+          1. Force-flush both Parquet writers (if storage enabled).
           2. Log live book state (bid/ask/spread/levels) at INFO level.
         """
         while True:
             await asyncio.sleep(self._heartbeat_s)
-            self._trade_writer.flush_now()
-            self._depth_writer.flush_now()
+            if self._trade_writer is not None:
+                self._trade_writer.flush_now()
+            if self._depth_writer is not None:
+                self._depth_writer.flush_now()
 
             book = self.depth_mgr.book
             bb = book.best_bid()

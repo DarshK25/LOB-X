@@ -1,5 +1,4 @@
-"""execution package — shadow fills and inventory tracking."""
-from lobx.execution.inventory import InventoryTracker
-from lobx.execution.shadow_engine import ShadowQuoteEngine, ShadowOrder
+"""Paper exchange: latency, queue position, fees and per-strategy accounts."""
+from lobx.execution.simulator import ExecutionConfig, MarketSimulator, SimAccount
 
-__all__ = ["InventoryTracker", "ShadowQuoteEngine", "ShadowOrder"]
+__all__ = ["ExecutionConfig", "MarketSimulator", "SimAccount"]
