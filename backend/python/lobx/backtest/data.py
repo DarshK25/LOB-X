@@ -15,6 +15,7 @@ the level change instead of counting it twice.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
@@ -111,17 +112,52 @@ def infer_tick(prices: np.ndarray) -> float:
     return float(round(diffs.min(), 8)) if len(diffs) else 0.01
 
 
-def load_history(label_or_file: str) -> MarketData:
-    """Load a futures window by manifest label (e.g. 'calm') or book file name."""
+def _history_entry(label_or_file: str) -> dict:
     manifest = json.loads((HISTORY_DIR / "manifest.json").read_text())
     for w in manifest["windows"]:
         if label_or_file in (w["label"], w["book_file"]):
-            book = pd.read_parquet(HISTORY_DIR / w["book_file"])
-            trades = pd.read_parquet(HISTORY_DIR / w["trades_file"])
-            tick = infer_tick(book.bid.to_numpy())
-            name = f"{w['label']} {w['date']} {w['start_utc']}-{w['end_utc']}"
-            return _from_frames(name, w["venue"], tick, book, trades, w)
+            return w
     raise KeyError(f"no history window {label_or_file!r}; run scripts/fetch_history.py")
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_history(label_or_file: str) -> dict:
+    """Verify files against the committed manifest before a long study."""
+    w = _history_entry(label_or_file)
+    checked = {}
+    for kind, file_key, hash_key in (
+        ("book", "book_file", "book_sha256"), ("trades", "trades_file", "trades_sha256")
+    ):
+        path = HISTORY_DIR / w[file_key]
+        actual = _sha256(path) if path.exists() else None
+        expected = w.get(hash_key)
+        checked[kind] = {"file": path.name, "exists": path.exists(), "sha256": actual,
+                         "expected": expected, "ok": actual is not None and actual == expected}
+    checked["ok"] = all(x["ok"] for x in checked.values())
+    return checked
+
+
+def load_history(label_or_file: str, verify: bool = False) -> MarketData:
+    """Load a manifest window; optionally verify SHA-256 first."""
+    w = _history_entry(label_or_file)
+    if verify:
+        check = verify_history(label_or_file)
+        if not check["ok"]:
+            raise ValueError(f"history integrity check failed: {check}")
+    book = pd.read_parquet(HISTORY_DIR / w["book_file"])
+    trades = pd.read_parquet(HISTORY_DIR / w["trades_file"])
+    tick = infer_tick(book.bid.to_numpy())
+    start_date, end_date = w.get("start_date", w["date"]), w.get("end_date", w["date"])
+    dates = start_date if start_date == end_date else f"{start_date}..{end_date}"
+    name = f"{w['label']} {dates} {w['start_utc']}-{w['end_utc']}"
+    return _from_frames(name, w["venue"], tick, book, trades, w)
 
 
 def list_history() -> list[str]:

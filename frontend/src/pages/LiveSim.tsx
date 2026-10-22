@@ -16,6 +16,7 @@ function QuoteCell({ q }: { q: Quote | null }) {
 
 function Controls({ state }: { state: SimState | null }) {
   const [symbol, setSymbol] = useState("BTCUSDT");
+  const [market, setMarket] = useState<"spot" | "futures">("spot");
   const [fee, setFee] = useState("spot_vip0");
   const [capital, setCapital] = useState(10000);
   const [warmup, setWarmup] = useState(120);
@@ -25,10 +26,11 @@ function Controls({ state }: { state: SimState | null }) {
   useEffect(() => {
     if (!running || !state) return;
     if (state.symbol) setSymbol(state.symbol);
+    if (state.market_type) setMarket(state.market_type);
     if (state.fee) setFee(state.fee);
     if (state.capital_usd) setCapital(state.capital_usd);
     if (state.warmup) setWarmup(state.warmup.target_s);
-  }, [running, state?.symbol, state?.fee, state?.capital_usd, state?.warmup?.target_s]);
+  }, [running, state?.symbol, state?.market_type, state?.fee, state?.capital_usd, state?.warmup?.target_s]);
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setErr(null);
@@ -43,6 +45,16 @@ function Controls({ state }: { state: SimState | null }) {
   return (
     <div className="card controls">
       <label>Symbol<input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} disabled={!!running} /></label>
+      <label>Market
+        <select value={market} disabled={!!running} onChange={(e) => {
+          const value = e.target.value as "spot" | "futures";
+          setMarket(value);
+          setFee(value === "spot" ? "spot_vip0" : "vip0");
+        }}>
+          <option value="spot">Spot</option>
+          <option value="futures">USD-M futures</option>
+        </select>
+      </label>
       <label>Fees
         <select value={fee} onChange={(e) => setFee(e.target.value)} disabled={!!running}>
           {(state?.fees ?? FEES).map((f) => <option key={f}>{f}</option>)}
@@ -53,7 +65,7 @@ function Controls({ state }: { state: SimState | null }) {
       {running ? (
         <button className="danger" disabled={busy} onClick={() => act(() => postJSON("/api/v1/sim/stop"))}>Stop</button>
       ) : (
-        <button disabled={busy} onClick={() => act(() => postJSON("/api/v1/sim/start", { symbol, fee, capital_usd: capital, warmup_s: warmup }))}>
+        <button disabled={busy} onClick={() => act(() => postJSON("/api/v1/sim/start", { symbol, market, fee, capital_usd: capital, warmup_s: warmup }))}>
           {busy ? "Starting…" : "Start session"}
         </button>
       )}
@@ -183,6 +195,7 @@ export default function LiveSim() {
           <div className="statusbar">
             <span className={`pill ${statusClass}`}>{s.status.toUpperCase()}</span>
             <span>{s.symbol}</span>
+            <span className="dim">{s.market_type}</span>
             <span className="dim">{s.fee_label}</span>
             {s.quote_qty && <span className="dim">quote {s.quote_qty} · limit {s.max_position?.toFixed(5)}</span>}
             {s.latency_ms && <span className="dim">latency {s.latency_ms[0]}+{s.latency_ms[1]} ms</span>}

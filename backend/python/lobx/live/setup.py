@@ -26,14 +26,24 @@ def get_json(url: str):
         return json.loads(resp.read().decode())
 
 
-def spot_filters(symbol: str) -> tuple[float, float]:
-    """(tick size, lot step) of a Binance spot symbol."""
-    info = get_json(f"https://api.binance.com/api/v3/exchangeInfo?symbol={symbol}")
+def market_filters(symbol: str, market: str = "spot") -> tuple[float, float]:
+    """(tick size, lot step) from the selected Binance venue."""
+    if market not in ("spot", "futures"):
+        raise ValueError("market must be 'spot' or 'futures'")
+    base = "https://api.binance.com/api/v3" if market == "spot" \
+        else "https://fapi.binance.com/fapi/v1"
+    info = get_json(f"{base}/exchangeInfo?symbol={symbol}")
     f = {x["filterType"]: x for x in info["symbols"][0]["filters"]}
     return float(f["PRICE_FILTER"]["tickSize"]), float(f["LOT_SIZE"]["stepSize"])
 
 
-def latest_calibration(fee: str = "vip0", results_dir: Path = RESULTS_DIR) -> dict | None:
+def spot_filters(symbol: str) -> tuple[float, float]:
+    """Backward-compatible spot filter lookup."""
+    return market_filters(symbol, "spot")
+
+
+def latest_calibration(fee: str = "vip0", results_dir: Path = RESULTS_DIR,
+                       market: str | None = None) -> dict | None:
     """Calibration plus tuned gammas from a single-window research result.
 
     Calm windows are preferred (the normal state of the market), newest first.
@@ -43,6 +53,11 @@ def latest_calibration(fee: str = "vip0", results_dir: Path = RESULTS_DIR) -> di
     for path in files:
         res = json.loads(path.read_text())
         if "calibration" not in res or res["window"].startswith("cross"):
+            continue
+        venue = str(res.get("venue", "")).lower()
+        if market == "spot" and "spot" not in venue:
+            continue
+        if market == "futures" and "futures" not in venue:
             continue
         tuning = res["fees"].get(fee, next(iter(res["fees"].values()), {})).get("tuning", {})
         return res["calibration"] | {
@@ -55,13 +70,13 @@ def latest_calibration(fee: str = "vip0", results_dir: Path = RESULTS_DIR) -> di
 
 def build_live_sim(symbol: str = "BTCUSDT", fee: str = "spot_vip0", warmup_s: float = 120.0,
                    capital_usd: float = 10_000.0, record: bool = True,
-                   sessions_dir: Path = SESSIONS_DIR) -> LiveSimRunner:
+                   sessions_dir: Path = SESSIONS_DIR, market: str = "spot") -> LiveSimRunner:
     from lobx.market_data.collector import Collector
 
     prof = FEE_PROFILES[fee]
-    tick, lot_step = spot_filters(symbol)
+    tick, lot_step = market_filters(symbol, market)
     cfg = ExecutionConfig(tick_size=tick, maker_fee=prof["maker"], taker_fee=prof["taker"])
-    tuned = latest_calibration() or {}
+    tuned = latest_calibration(fee, market=market) or {}
     suite = {"gamma_as": tuned.get("_gamma_as", DEFAULT_GAMMA),
              "gamma_glft": tuned.get("_gamma_glft", DEFAULT_GAMMA), "maker_fee": prof["maker"]}
 
@@ -71,13 +86,15 @@ def build_live_sim(symbol: str = "BTCUSDT", fee: str = "spot_vip0", warmup_s: fl
     recorder = None
     if record:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        recorder = SessionRecorder(sessions_dir / f"{symbol}_{stamp}.jsonl.gz", {
-            "symbol": symbol, "venue": "Binance spot", "fee": fee, "fee_label": prof["label"],
+        recorder = SessionRecorder(sessions_dir / f"{symbol}_{market}_{stamp}.jsonl.gz", {
+            "symbol": symbol, "market": market, "venue": f"Binance {market}",
+            "fee": fee, "fee_label": prof["label"],
             "tick_size": tick, "lot_step": lot_step, "capital_usd": capital_usd,
             "warmup_s": warmup_s, "decision_ms": DECISION_MS, "event_history": EVENT_HISTORY,
             "suite": suite, "gamma_source": tuned.get("_source"),
             "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     collector = Collector(symbol=symbol, enable_engine_mirror=False, enable_storage=False,
-                          heartbeat_s=60)
+                          heartbeat_s=60, market=market)
     return LiveSimRunner(collector, build, cfg, warmup_s=warmup_s, decision_ms=DECISION_MS,
-                         capital_usd=capital_usd, lot_step=lot_step, recorder=recorder)
+                         capital_usd=capital_usd, lot_step=lot_step, recorder=recorder,
+                         venue=f"Binance {market}")

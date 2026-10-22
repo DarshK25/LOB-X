@@ -96,8 +96,8 @@ class LobxCLI:
             t.add_row(escape(cmd), what)
 
         row("live [SYM] [5s|1m] [candle|line]", "Live market view with the calibrated Hawkes gauge (online MLE refit every 60 s).")
-        row("sim [SYM] [FEE] [cap=10000] [WARMUP_S] [RUN_S] [norec]", "Paper-trade all strategies on the live feed, one account each. "
-                  f"FEE in {', '.join(FEE_PROFILES)} (default spot_vip0). Each account has cap= USD (default 10000): "
+        row("sim [SYM] [spot|futures] [FEE] [cap=10000] [WARMUP_S] [RUN_S] [norec]", "Paper-trade all strategies on the live feed, one account each. "
+                  f"FEE in {', '.join(FEE_PROFILES)} (default spot_vip0 on spot, vip0 on futures). Each account has cap= USD (default 10000): "
                   "one quote is 10% of it, inventory is capped at 100%. Calibrates on the first WARMUP_S seconds "
                   "(default 120); stops after RUN_S seconds or Ctrl+C. Every event is recorded to data/sessions unless norec.")
         row("sessions", "List recorded live sessions.")
@@ -132,12 +132,14 @@ class LobxCLI:
         from lobx.live.setup import build_live_sim
         from lobx.terminal.sim_dashboard import SimDashboard
 
-        symbol, fee, capital, record = "BTCUSDT", "spot_vip0", 10_000.0, True
+        symbol, fee, capital, record, market = "BTCUSDT", None, 10_000.0, True, "spot"
         numbers = []
         for a in args:
             low = a.lower()
             if low in FEE_PROFILES:
                 fee = low
+            elif low in ("spot", "futures"):
+                market = low
             elif m := re.fullmatch(r"(?:cap=|\$)([0-9.]+)(k?)", low):
                 capital = float(m[1]) * (1000 if m[2] else 1)
             elif low in ("norec", "--no-record"):
@@ -148,13 +150,14 @@ class LobxCLI:
                 symbol = a.upper()
         warmup = numbers[0] if numbers else 120.0
         duration = numbers[1] if len(numbers) > 1 else None
+        fee = fee or ("spot_vip0" if market == "spot" else "vip0")
         prof = FEE_PROFILES[fee]
-        runner = build_live_sim(symbol, fee, warmup, capital, record=record)
+        runner = build_live_sim(symbol, fee, warmup, capital, record=record, market=market)
         try:
             asyncio.run(SimDashboard(runner, symbol, prof["label"], console=CONSOLE).run(duration))
         finally:
             runner.close()
-        self._print_reports(runner.reports(), f"Live paper session · {symbol} · {prof['label']} · "
+        self._print_reports(runner.reports(), f"Live paper session · {symbol} {market} · {prof['label']} · "
                                               f"${capital:,.0f} capital")
         if runner.recorder is not None:
             CONSOLE.print(f"[dim]Recorded {runner.recorder.events:,} events to "

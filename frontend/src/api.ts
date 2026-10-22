@@ -61,6 +61,7 @@ export interface SimState {
   fees?: string[];
   error?: string | null;
   symbol?: string;
+  market_type?: "spot" | "futures";
   fee?: string;
   fee_label?: string;
   maker_fee_bps?: number;

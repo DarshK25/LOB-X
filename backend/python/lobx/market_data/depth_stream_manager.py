@@ -69,7 +69,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-REST_BASE = "https://api.binance.com"
+REST_BASE = {"spot": "https://api.binance.com/api/v3/depth",
+             "futures": "https://fapi.binance.com/fapi/v1/depth"}
 SNAPSHOT_LIMIT = 1000  # maximum levels Binance returns; always use this
 
 
@@ -199,8 +200,11 @@ class DepthStreamManager:
     the `await asyncio.sleep(0)` poll.
     """
 
-    def __init__(self, symbol: str) -> None:
+    def __init__(self, symbol: str, market: str = "spot") -> None:
+        if market not in REST_BASE:
+            raise ValueError("market must be 'spot' or 'futures'")
         self.symbol = symbol.upper()
+        self.market = market
         self.book = LocalOrderBook()
         self._state = _SyncState()
         self._sync_generation = 0
@@ -273,7 +277,7 @@ class DepthStreamManager:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(
-                        f"{REST_BASE}/api/v3/depth",
+                        REST_BASE[self.market],
                         params={"symbol": self.symbol, "limit": SNAPSHOT_LIMIT},
                     )
                     resp.raise_for_status()
@@ -308,7 +312,10 @@ class DepthStreamManager:
         # ── Step 3: discard stale buffered events ──────────────────────────────
         # Events whose final update ID (u) <= lastUpdateId are already reflected
         # in the snapshot — throw them away.
-        self._state.buffer = [e for e in self._state.buffer if e["u"] > last_id]
+        self._state.buffer = [
+            e for e in self._state.buffer
+            if (e["u"] >= last_id if self.market == "futures" else e["u"] > last_id)
+        ]
 
         if not self._state.buffer:
             # No residual events — we're in sync, nothing more to do.
@@ -319,10 +326,12 @@ class DepthStreamManager:
             return
 
         # ── Step 4: find the sync point ───────────────────────────────────────
-        # The first remaining event must satisfy:  U <= lastUpdateId + 1 <= u
-        # ("this event covers the update immediately after the snapshot").
+        # Spot covers the update immediately after the snapshot.  USD-M uses
+        # the exchange's ``pu`` chain and specifies that the first event cover
+        # ``lastUpdateId`` itself.
         first = self._state.buffer[0]
-        if not (first["U"] <= last_id + 1 <= first["u"]):
+        cursor = last_id if self.market == "futures" else last_id + 1
+        if not (first["U"] <= cursor <= first["u"]):
             logger.error(
                 "[%s] Snapshot/stream gap (lastUpdateId=%d, buffer[0] U=%d, u=%d) — resyncing",
                 self.symbol, last_id, first["U"], first["u"],
@@ -371,12 +380,12 @@ class DepthStreamManager:
         state = self._state
 
         if check_continuity and state.prev_final_u is not None:
-            expected_U = state.prev_final_u + 1
-            actual_U = event["U"]
-            if actual_U != expected_U:
+            contiguous = event.get("pu") == state.prev_final_u if self.market == "futures" \
+                else event["U"] == state.prev_final_u + 1
+            if not contiguous:
                 logger.error(
-                    "[%s] Update-ID gap! Expected U=%d, got U=%d (prev u=%d). Resyncing.",
-                    self.symbol, expected_U, actual_U, state.prev_final_u,
+                    "[%s] Update-ID gap! U=%d pu=%s (prev u=%d). Resyncing.",
+                    self.symbol, event["U"], event.get("pu"), state.prev_final_u,
                 )
                 # Rebuild state and queue a resync.
                 self._state = _SyncState(buffer=[event])

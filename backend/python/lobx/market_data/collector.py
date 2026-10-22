@@ -24,7 +24,7 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from lobx.market_data.binance_ws_client import BinanceWSClient
+from lobx.market_data.binance_ws_client import BINANCE_WS_FUTURES, BinanceWSClient
 from lobx.market_data.depth_stream_manager import DepthStreamManager
 from lobx.market_data.trade_stream import TradeTick, parse_trade_event
 from lobx.storage.parquet_writer import (
@@ -84,13 +84,17 @@ class Collector:
         flush_every: int = 500,
         heartbeat_s: int = 30,
         enable_storage: bool = False,
+        market: str = "spot",
     ) -> None:
+        if market not in ("spot", "futures"):
+            raise ValueError("market must be 'spot' or 'futures'")
         self.symbol = symbol.upper()
+        self.market = market
         self._heartbeat_s = heartbeat_s
         self._enable_storage = enable_storage
 
         # ── Order Book #1: Python reference book ──────────────────────────────
-        self.depth_mgr = DepthStreamManager(self.symbol)
+        self.depth_mgr = DepthStreamManager(self.symbol, market)
         self._written_snapshot_generation = 0
         self._mirror_generation = 0
 
@@ -132,6 +136,7 @@ class Collector:
             streams=[f"{sym}@depth@100ms", f"{sym}@trade"],
             on_message=self._on_message,
             on_disconnect=self._on_disconnect,
+            **({"base_url": BINANCE_WS_FUTURES} if market == "futures" else {}),
         )
 
         self.ws_status = "Initializing..."

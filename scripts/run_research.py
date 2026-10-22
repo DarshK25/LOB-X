@@ -37,6 +37,8 @@ def main() -> int:
     ap.add_argument("--walk-forward", nargs=2, type=float, metavar=("TRAIN_H", "TEST_H"),
                     help="nested rolling folds (hours); saved under results/research/walk_forward")
     ap.add_argument("--step-hours", type=float, help="walk-forward step (default TEST_H)")
+    ap.add_argument("--verify-data", action="store_true",
+                    help="verify Parquet SHA-256 hashes against manifest before loading")
     ap.add_argument("--summary-only", action="store_true", help="rebuild the markdown summary")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -48,7 +50,7 @@ def main() -> int:
             print("No history found. Run: python scripts/fetch_history.py")
             return 1
         for label in labels:
-            data = load_history(label)
+            data = load_history(label, verify=args.verify_data)
             if args.walk_forward:
                 train_h, test_h = args.walk_forward
                 result = walk_forward(data, train_h * 3600, test_h * 3600, tuple(args.fees),
@@ -59,7 +61,7 @@ def main() -> int:
                 target = OUT
             print(f"saved {save_result(result, target)}")
         if args.cross:
-            train, test = (load_history(x) for x in args.cross)
+            train, test = (load_history(x, verify=args.verify_data) for x in args.cross)
             result = cross_regime(train, test, tuple(args.fees))
             print(f"saved {save_result(result, OUT)}")
     path = write_summary(OUT)

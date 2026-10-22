@@ -40,6 +40,9 @@ BINANCE_WS_DATA_ONLY = "wss://data-stream.binance.vision/stream"
 # Production endpoint — identical data, slightly higher stability SLA.
 BINANCE_WS_PROD = "wss://stream.binance.com:9443/stream"
 
+# USD-M futures public combined streams.
+BINANCE_WS_FUTURES = "wss://fstream.binance.com/stream"
+
 # Spot testnet — use during development to avoid hammering prod.
 BINANCE_WS_TESTNET = "wss://testnet.binance.vision/ws"
 

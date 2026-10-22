@@ -26,7 +26,8 @@ router = APIRouter()
 
 class StartRequest(BaseModel):
     symbol: str = Field("BTCUSDT", pattern="^[A-Z0-9]{5,20}$")
-    fee: str = "spot_vip0"
+    market: str = Field("spot", pattern="^(spot|futures)$")
+    fee: str | None = None
     capital_usd: float = Field(10_000.0, gt=0, le=1e9)
     warmup_s: float = Field(120.0, ge=20, le=3600)
     record: bool = True
@@ -74,11 +75,15 @@ class SimService:
 
         if self.running:
             raise HTTPException(status_code=409, detail="a session is already running")
+        if req.fee is None:
+            req = req.model_copy(update={
+                "fee": "spot_vip0" if req.market == "spot" else "vip0"})
         if req.fee not in FEE_PROFILES:
             raise HTTPException(status_code=422, detail=f"unknown fee profile {req.fee}")
         await self.stop()
-        self.runner = await asyncio.to_thread(build_live_sim, req.symbol, req.fee, req.warmup_s,
-                                              req.capital_usd, req.record)
+        self.runner = await asyncio.to_thread(
+            build_live_sim, req.symbol, req.fee, req.warmup_s, req.capital_usd, req.record,
+            market=req.market)
         self.request, self.error, self._reports = req, None, {}
         self.started_at = time.time()
         self._tasks = [asyncio.create_task(self.runner.collector.run()),
@@ -147,7 +152,8 @@ class SimService:
         return finite({
             "status": r.status if self.running else "stopped",
             "error": self.error or r.error,
-            "symbol": self.request.symbol, "fee": self.request.fee, "fee_label": prof["label"],
+            "symbol": self.request.symbol, "market_type": self.request.market,
+            "fee": self.request.fee, "fee_label": prof["label"],
             "maker_fee_bps": prof["maker"] * 1e4, "taker_fee_bps": prof["taker"] * 1e4,
             "capital_usd": r.capital_usd, "quote_qty": r.quote_qty,
             "max_position": r.config.max_position if r.quote_qty else None,
