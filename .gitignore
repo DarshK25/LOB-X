@@ -51,8 +51,9 @@ frontend/.env.production
 !.env.example
 
 # ─── Data / large files ───────────────────────────────────────────────────────
-# Parquet and log files are stored as GitHub Artifacts (30-day retention)
-# and in Neon PostgreSQL — never committed to git.
+# Market data is never committed: scripts/fetch_history.py rebuilds
+# data/history/ from Binance Vision and verifies it against manifest.json.
+data/cache/
 data/raw/
 data/processed/
 data/backtest/
