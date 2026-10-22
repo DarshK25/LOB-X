@@ -16,31 +16,7 @@ Venue: Binance USD-M futures. In-sample 2.0 h, out-of-sample 2.0 h. Quantity 0.0
 | arrival A, k | 0.302 /s, 0.854 /USD (R2 0.79, 28,653 market orders) |
 | Hawkes buy mu / alpha / beta / n | 0.614 / 0.323 / 0.472 / 0.68 |
 | Hawkes sell mu / alpha / beta / n | 0.731 / 0.320 / 0.500 / 0.64 |
-| fair value (2 s mid change) | b_flow 0.082, b_obi 0.709; R2 in-sample 0.102, out-of-sample 0.132 |
-
-### Binance USD-M VIP0 (2.0 / 5.0 bp)
-
-Gamma chosen in-sample (best net PnL with >= 100 fills/h): AS 0.03, GLFT 1 (1/USD).
-
-| Strategy | Net PnL $ | 95% CI | Sharpe | Max DD $ | Fills/h | Edge/fill $ | Adverse 5s bp | Break-even maker bp | P(beats FixedSpread) |
-|---|---|---|---|---|---|---|---|---|---|
-| NoTrade | +0.000 | [+0.00, +0.00] | +0.0 | 0.000 | 0 | +0.00000 | +0.00 | - | 1.00 |
-| FixedSpread | -34.218 | [-39.56, -30.06] | -1263.2 | 34.218 | 914 | +0.00002 | +0.52 | -0.73 | - |
-| InventorySkew | -30.878 | [-35.95, -26.86] | -1188.1 | 30.878 | 788 | +0.00004 | +0.61 | -0.83 | 1.00 |
-| AS | -8.163 | [-9.40, -7.33] | -1127.5 | 8.163 | 214 | +0.00075 | +0.69 | -0.74 | 1.00 |
-| GLFT | -9.160 | [-10.44, -8.03] | -1140.7 | 9.160 | 243 | +0.00073 | +0.65 | -0.70 | 1.00 |
-| GLFT+Hawkes+FV | -7.245 | [-8.46, -6.38] | -1100.2 | 7.245 | 194 | +0.00098 | +0.69 | -0.68 | 1.00 |
-| GLFT+HFV fee-aware | +0.000 | [+0.00, +0.00] | +0.0 | 0.000 | 0 | +0.00000 | +0.00 | - | 1.00 |
-
-Stress tests (GLFT+Hawkes+FV unless named):
-
-| Variant | Net PnL $ | Fills/h | Adverse 5s bp |
-|---|---|---|---|
-| latency 50+50ms | -7.185 | 192 | +0.72 |
-| latency 150+150ms | -7.365 | 195 | +0.71 |
-| optimistic queue | -7.805 | 251 | +0.38 |
-| requote 500ms | -7.304 | 195 | +0.69 |
-| FixedSpread optimistic queue | -263.169 | 9046 | +0.05 |
+| fair value (2 s mid change) | b_flow 0.456, b_obi 1.235; R2 in-sample 0.112, out-of-sample 0.167 |
 
 ### MM-program scenario (-0.5 / 1.7 bp)
 
@@ -53,17 +29,21 @@ Gamma chosen in-sample (best net PnL with >= 100 fills/h): AS 0.03, GLFT 1 (1/US
 | InventorySkew | -3.506 | [-5.74, -1.80] | -226.3 | 3.724 | 788 | +0.00004 | +0.61 | -0.82 | 0.17 |
 | AS | -0.690 | [-1.25, -0.27] | -233.9 | 0.692 | 214 | +0.00075 | +0.69 | -0.73 | 0.99 |
 | GLFT | -0.680 | [-1.34, -0.28] | -209.1 | 0.738 | 243 | +0.00073 | +0.65 | -0.70 | 0.99 |
-| GLFT+Hawkes+FV | -0.473 | [-0.90, -0.18] | -188.0 | 0.481 | 194 | +0.00098 | +0.69 | -0.67 | 1.00 |
-| GLFT+HFV fee-aware | -0.473 | [-0.90, -0.18] | -188.0 | 0.481 | 194 | +0.00098 | +0.69 | - | 1.00 |
+| GLFT+Hawkes+FV | -0.364 | [-0.78, -0.06] | -161.2 | 0.378 | 153 | +0.00113 | +0.73 | -0.67 | 1.00 |
+| GLFT+HFV fee-aware | -0.374 | [-0.81, -0.06] | -163.9 | 0.388 | 152 | +0.00114 | +0.74 | - | 1.00 |
+| AdaptiveGLFT | -0.354 | [-0.76, -0.07] | -158.6 | 0.417 | 117 | +0.00140 | +0.72 | -0.72 | 1.00 |
+| AdaptiveGLFT fee-floor | -0.257 | [-0.75, +0.12] | -108.0 | 0.382 | 100 | +0.00182 | +0.83 | -0.68 | 1.00 |
+| AdaptiveGLFT alpha-gated | +0.026 | [-0.05, +0.08] | +42.6 | 0.040 | 25 | +0.00136 | +0.74 | -0.43 | 1.00 |
+| AdaptiveGLFT alpha-gated fee-floor | -0.047 | [-0.16, +0.06] | -46.4 | 0.093 | 24 | +0.00151 | +0.87 | -0.64 | 1.00 |
 
 Stress tests (GLFT+Hawkes+FV unless named):
 
 | Variant | Net PnL $ | Fills/h | Adverse 5s bp |
 |---|---|---|---|
-| latency 50+50ms | -0.487 | 192 | +0.72 |
-| latency 150+150ms | -0.562 | 195 | +0.71 |
-| optimistic queue | +0.997 | 251 | +0.38 |
-| requote 500ms | -0.501 | 195 | +0.69 |
+| latency 50+50ms | +0.042 | 29 | +0.68 |
+| latency 150+150ms | +0.022 | 35 | +0.68 |
+| optimistic queue | +0.092 | 25 | +0.42 |
+| requote 500ms | +0.014 | 24 | +0.74 |
 | FixedSpread optimistic queue | +54.186 | 9046 | +0.05 |
 
 ## crash 2024-03-05 13:00-17:00
@@ -76,31 +56,7 @@ Venue: Binance USD-M futures. In-sample 2.0 h, out-of-sample 2.0 h. Quantity 0.0
 | arrival A, k | 3.362 /s, 0.567 /USD (R2 0.81, 154,212 market orders) |
 | Hawkes buy mu / alpha / beta / n | 8.623 / 32.049 / 181.512 / 0.18 |
 | Hawkes sell mu / alpha / beta / n | 10.309 / 56.325 / 609.683 / 0.09 |
-| fair value (2 s mid change) | b_flow 0.045, b_obi 0.322; R2 in-sample 0.020, out-of-sample -0.010 |
-
-### Binance USD-M VIP0 (2.0 / 5.0 bp)
-
-Gamma chosen in-sample (best net PnL with >= 100 fills/h): AS 0.003, GLFT 3 (1/USD).
-
-| Strategy | Net PnL $ | 95% CI | Sharpe | Max DD $ | Fills/h | Edge/fill $ | Adverse 5s bp | Break-even maker bp | P(beats FixedSpread) |
-|---|---|---|---|---|---|---|---|---|---|
-| NoTrade | +0.000 | [+0.00, +0.00] | +0.0 | 0.000 | 0 | +0.00000 | +0.00 | - | 1.00 |
-| FixedSpread | -708.574 | [-831.58, -614.58] | -1841.4 | 708.574 | 19200 | +0.00031 | +0.80 | -0.82 | - |
-| InventorySkew | -692.659 | [-820.96, -598.44] | -1834.4 | 692.659 | 18393 | +0.00032 | +0.87 | -0.86 | 0.99 |
-| AS | -9.387 | [-12.09, -3.24] | -364.1 | 9.387 | 315 | +0.01344 | +2.44 | -0.22 | 1.00 |
-| GLFT | -18.328 | [-22.45, -12.49] | -584.3 | 18.328 | 689 | +0.01371 | +2.13 | +0.01 | 1.00 |
-| GLFT+Hawkes+FV | -13.480 | [-16.25, -9.62] | -674.8 | 13.480 | 446 | +0.01294 | +2.28 | -0.27 | 1.00 |
-| GLFT+HFV fee-aware | -10.623 | [-19.22, -0.74] | -147.4 | 12.414 | 31 | +0.03368 | +9.02 | - | 1.00 |
-
-Stress tests (GLFT+Hawkes+FV unless named):
-
-| Variant | Net PnL $ | Fills/h | Adverse 5s bp |
-|---|---|---|---|
-| latency 50+50ms | -28.623 | 850 | +1.83 |
-| latency 150+150ms | -34.798 | 938 | +1.72 |
-| optimistic queue | -12.862 | 459 | +2.07 |
-| requote 500ms | -21.796 | 591 | +2.05 |
-| FixedSpread optimistic queue | -1113.655 | 36575 | +0.31 |
+| fair value (2 s mid change) | b_flow 0.065, b_obi 0.191; R2 in-sample 0.073, out-of-sample -0.009 |
 
 ### MM-program scenario (-0.5 / 1.7 bp)
 
@@ -113,17 +69,21 @@ Gamma chosen in-sample (best net PnL with >= 100 fills/h): AS 0.003, GLFT 3 (1/U
 | InventorySkew | -86.078 | [-110.41, -74.04] | -526.7 | 86.253 | 18393 | +0.00032 | +0.87 | -0.85 | 0.14 |
 | AS | +1.190 | [+0.04, +2.33] | +166.0 | 0.377 | 315 | +0.01344 | +2.44 | -0.22 | 1.00 |
 | GLFT | +4.643 | [-0.06, +8.62] | +127.4 | 0.599 | 689 | +0.01371 | +2.13 | +0.01 | 1.00 |
-| GLFT+Hawkes+FV | +1.356 | [-0.39, +2.88] | +117.9 | 0.601 | 446 | +0.01294 | +2.28 | -0.27 | 1.00 |
-| GLFT+HFV fee-aware | +0.982 | [-0.44, +2.71] | +96.4 | 0.878 | 436 | +0.01300 | +2.50 | - | 1.00 |
+| GLFT+Hawkes+FV | +1.496 | [-0.39, +3.09] | +115.4 | 0.493 | 427 | +0.01356 | +2.35 | -0.24 | 1.00 |
+| GLFT+HFV fee-aware | +0.719 | [-0.57, +2.12] | +75.8 | 0.856 | 419 | +0.01338 | +2.63 | - | 1.00 |
+| AdaptiveGLFT | +0.331 | [-0.04, +0.85] | +87.2 | 0.117 | 80 | +0.02032 | +3.55 | -0.19 | 1.00 |
+| AdaptiveGLFT fee-floor | +0.372 | [-0.07, +0.88] | +93.7 | 0.151 | 78 | +0.02165 | +3.60 | -0.15 | 1.00 |
+| AdaptiveGLFT alpha-gated | +0.106 | [-0.12, +0.43] | +42.1 | 0.112 | 43 | +0.02178 | +3.90 | -0.32 | 1.00 |
+| AdaptiveGLFT alpha-gated fee-floor | +0.182 | [-0.23, +0.65] | +48.4 | 0.197 | 51 | +0.02252 | +3.81 | -0.23 | 1.00 |
 
 Stress tests (GLFT+Hawkes+FV unless named):
 
 | Variant | Net PnL $ | Fills/h | Adverse 5s bp |
 |---|---|---|---|
-| latency 50+50ms | -0.323 | 850 | +1.83 |
-| latency 150+150ms | -3.733 | 938 | +1.72 |
-| optimistic queue | +2.478 | 459 | +2.07 |
-| requote 500ms | -2.236 | 591 | +2.05 |
+| latency 50+50ms | +0.192 | 75 | +3.09 |
+| latency 150+150ms | -0.711 | 93 | +3.18 |
+| optimistic queue | +0.250 | 44 | +3.55 |
+| requote 500ms | -0.006 | 27 | +4.26 |
 | FixedSpread optimistic queue | +106.004 | 36575 | +0.31 |
 
 ## cross calm 2024-03-30 08:00-12:00 -> crash 2024-03-05 13:00-17:00
