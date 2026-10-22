@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from lobx.analytics.calibration import calibrate, fair_value_r2, fit_sigma
+from lobx.analytics.calibration import calibrate, fair_value_r2, fit_sigma, select_fair_value
 from lobx.analytics.performance import block_bootstrap, deflated_sharpe
 from lobx.backtest.data import MarketData
 from lobx.backtest.engine import run_backtest
@@ -74,7 +74,7 @@ def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
     """
     A, k = calib["arrival"]["A"], calib["arrival"]["k"]
     fv = calib["fair_value"]
-    fair = FairValueModel(fv["b_micro"], fv["b_flow"], fv["b_obi"])
+    fair = FairValueModel(fv["b_micro"], fv["b_flow"], fv["b_obi"], fv.get("b_volume", 0.0))
     half_tick = tick / 2.0
     return [
         NoTradeStrategy(qty, label="NoTrade"),
@@ -87,6 +87,20 @@ def strategy_suite(calib: dict, tick: float, gamma_as: float, gamma_glft: float,
         GLFTStrategy(gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
                      hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
                      fee_aware=True, label="GLFT+HFV fee-aware"),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            label="AdaptiveGLFT",
+        ),
+        GLFTStrategy(
+            gamma_glft, A, k, qty, hawkes_widen=HAWKES_WIDEN,
+            hawkes_pause_ratio=HAWKES_PAUSE, fair_value=fair, maker_fee=maker_fee,
+            sigma_reference=calib["sigma"], sigma_power=0.5, asymmetric_hawkes=True,
+            directional_pause=True, toxicity_widen=0.5, queue_widen=0.25,
+            fee_floor=True, edge_margin_bps=0.2, label="AdaptiveGLFT fee-floor",
+        ),
     ]
 
 
@@ -167,15 +181,22 @@ def evaluate(ins: MarketData, oos: MarketData, name: str,
     selection_data = calibration_data or ins
     tuning_data = tuning_data or ins
     selection_calib = calibrate(selection_data)
+    selected_fair = select_fair_value(selection_data, tuning_data, selection_calib)
+    selection_calib["fair_value"] = selected_fair
     # Refit on every observation available before OOS after hyperparameters
     # have been selected.  This is standard nested time-series validation.
     nested = calibration_data is not None or tuning_data is not ins
-    calib = calibrate(ins) if nested else selection_calib
+    calib = (calibrate(ins, selected_fair["horizon_ms"], selected_fair["enabled"])
+             if nested else selection_calib)
+    calib["fair_value"]["selection_validation_r2"] = selected_fair["validation_r2"]
+    calib["fair_value"]["candidate_r2"] = selected_fair["candidate_r2"]
     calib["fair_value"]["r2_out_of_sample"] = fair_value_r2(oos, calib)
     log(f"  calibration: sigma={calib['sigma']:.3f} USD/sqrt(s)  A={calib['arrival']['A']:.2f}/s"
         f"  k={calib['arrival']['k']:.2f}/USD (R2 {calib['arrival']['r2']:.2f})  Hawkes n="
         f"{calib['hawkes']['buy']['branching_ratio']:.2f}/{calib['hawkes']['sell']['branching_ratio']:.2f}"
-        f"  FV R2 IS/OOS {calib['fair_value']['r2_in_sample']:.3f}/"
+        f"  FV {'on' if calib['fair_value']['enabled'] else 'off'}"
+        f" @{calib['fair_value']['horizon_ms']}ms R2 tune/IS/OOS "
+        f"{selected_fair['validation_r2']:.3f}/{calib['fair_value']['r2_in_sample']:.3f}/"
         f"{calib['fair_value']['r2_out_of_sample']:.3f}")
 
     result: dict = {"window": name, "venue": oos.venue, "hours": ins.hours + oos.hours,

@@ -45,6 +45,8 @@ class FeatureEngine:
         sigma_seed: float | None = None,
         calibrated: bool = False,
         event_history: int = 0,
+        volume_signal_s: int = 5,
+        toxicity_buckets: int = 30,
     ) -> None:
         self.tick_size = tick_size
         self.vol = EWMAVolatility(sample_s=1.0, halflife_s=sigma_halflife_s)
@@ -61,6 +63,8 @@ class FeatureEngine:
         self.bid_qty = self.ask_qty = 0.0
         self.last_ts = 0
         self._last_order_key: tuple[int, bool] | None = None
+        self.volume_signal_s = max(1, volume_signal_s)
+        self._volume_buckets: deque[list[float]] = deque(maxlen=max(2, toxicity_buckets))
 
     def set_hawkes(self, buy: HawkesParams, sell: HawkesParams, calibrated: bool = True) -> None:
         self.hawkes_buy = HawkesIntensity(buy.mu, buy.alpha, buy.beta)
@@ -103,6 +107,13 @@ class FeatureEngine:
             self.vol.update(ts, 0.5 * (bid + ask))
 
     def on_trade(self, ts: int, price: float, qty: float, is_buyer_maker: bool) -> None:
+        # Volume signals use every print: one aggressive order can execute
+        # across levels and its full size matters even though Hawkes counts the
+        # order only once.
+        sec = ts // 1000
+        if not self._volume_buckets or self._volume_buckets[-1][0] != sec:
+            self._volume_buckets.append([float(sec), 0.0, 0.0])
+        self._volume_buckets[-1][2 if is_buyer_maker else 1] += float(qty)
         # One aggressive order can print several trades in the same millisecond;
         # count it once so the Hawkes clock sees market orders, not fills.
         key = (ts, is_buyer_maker)
@@ -125,10 +136,25 @@ class FeatureEngine:
     def regime(self, ts: int) -> str:
         return regime(self.intensities(ts)[2])
 
+    def volume_signals(self, ts: int) -> tuple[float, float]:
+        """(signed recent volume imbalance, VPIN-lite bucket toxicity)."""
+        if not self._volume_buckets:
+            return 0.0, 0.0
+        cutoff = ts / 1000.0 - self.volume_signal_s
+        recent = [b for b in self._volume_buckets if b[0] >= cutoff]
+        buy = sum(b[1] for b in recent)
+        sell = sum(b[2] for b in recent)
+        imbalance = (buy - sell) / (buy + sell) if buy + sell > 0 else 0.0
+        bucket_imbalances = [abs(b[1] - b[2]) / (b[1] + b[2])
+                             for b in self._volume_buckets if b[1] + b[2] > 0]
+        toxicity = float(np.mean(bucket_imbalances)) if bucket_imbalances else 0.0
+        return float(imbalance), toxicity
+
     def state(self, ts: int | None = None) -> MarketState:
         ts = self.last_ts if ts is None else ts
         lb, ls, ratio = self.intensities(ts)
         total = lb + ls
+        volume_imbalance, toxicity = self.volume_signals(ts)
         return MarketState(
             timestamp=ts,
             best_bid=self.bid,
@@ -140,4 +166,6 @@ class FeatureEngine:
             hawkes_ratio=ratio,
             flow_imbalance=(lb - ls) / total if total > 0 else 0.0,
             trade_rate=total,
+            signed_volume_imbalance=volume_imbalance,
+            volume_toxicity=toxicity,
         )

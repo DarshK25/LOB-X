@@ -9,6 +9,7 @@ from lobx.strategy import (
     InventorySkewStrategy,
 )
 from lobx.strategy.base import MarketState, passive_pair
+from lobx.strategy.features import FeatureEngine
 
 
 def st(**kw):
@@ -84,3 +85,40 @@ def test_fee_aware_glft_drops_quotes_that_cannot_cover_the_fee():
     rebate = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, qty=0.001, maker_fee=-0.00005, fee_aware=True)
     q2 = rebate.on_tick(st(), 0.0)
     assert q2.bid is not None and q2.ask is not None
+
+
+def test_volume_alpha_uses_all_trade_prints_but_hawkes_deduplicates_order():
+    f = FeatureEngine(0.1)
+    f.on_book(1_000, 99.9, 1.0, 100.1, 1.0)
+    f.on_trade(1_001, 100.1, 2.0, False)
+    f.on_trade(1_001, 100.2, 3.0, False)
+    imbalance, toxicity = f.volume_signals(1_001)
+    assert imbalance == pytest.approx(1.0)
+    assert toxicity == pytest.approx(1.0)
+    assert f.hawkes_buy.intensity == pytest.approx(1.3)
+
+
+def test_asymmetric_hawkes_widens_the_side_exposed_to_flow():
+    g = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, hawkes_widen=0.5,
+                     asymmetric_hawkes=True)
+    g.on_tick(st(hawkes_ratio=3.0, flow_imbalance=0.8), 0.0)
+    assert g.last_quote_audit["ask_widen"] > g.last_quote_audit["bid_widen"]
+
+
+def test_directional_pause_removes_only_the_toxic_side():
+    g = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, hawkes_pause_ratio=3.0,
+                     directional_pause=True)
+    buy_burst = g.on_tick(st(hawkes_ratio=4.0, flow_imbalance=0.8), 0.0)
+    assert buy_burst.bid is not None and buy_burst.ask is None
+    sell_burst = g.on_tick(st(hawkes_ratio=4.0, flow_imbalance=-0.8), 0.0)
+    assert sell_burst.bid is None and sell_burst.ask is not None
+
+
+def test_fee_floor_places_quotes_beyond_cost_instead_of_stopping():
+    s = st()
+    g = GLFTStrategy(gamma=0.01, A=0.5, k=1.0, maker_fee=0.0002,
+                     fee_floor=True, edge_margin_bps=0.5)
+    q = g.on_tick(s, 0.0)
+    required = s.mid * 2.5 / 1e4
+    assert q.bid is not None and s.mid - q.bid.price >= required
+    assert q.ask is not None and q.ask.price - s.mid >= required

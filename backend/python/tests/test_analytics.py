@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from lobx.analytics.calibration import calibrate, fit_arrival
+from lobx.analytics.calibration import calibrate, fit_arrival, select_fair_value
 from lobx.analytics.performance import (
     account_report,
     block_bootstrap,
@@ -138,6 +138,23 @@ def test_calibrate_and_backtest_end_to_end_on_synthetic_market():
     assert fixed["fills"] > 0
     assert fixed["net_pnl"] == pytest.approx(fixed["gross_pnl"])  # zero fees
     assert run.book_events == len(data.book_ts)
+
+
+def test_fair_value_selection_uses_later_fold_and_gates_negative_r2(monkeypatch):
+    data = synthetic_market(seconds=10)
+    calib = {"hawkes": {}, "sigma": 1.0}
+    monkeypatch.setattr(
+        "lobx.analytics.calibration.fit_fair_value",
+        lambda *_args: {"horizon_ms": _args[-1], "b_micro": 0.0,
+                                    "b_flow": 1.0, "b_obi": 1.0, "b_volume": 1.0},
+    )
+    monkeypatch.setattr("lobx.analytics.calibration.fair_value_r2",
+                        lambda _data, trial: -trial["fair_value"]["horizon_ms"] / 1_000)
+    selected = select_fair_value(data, data, calib, (250, 500))
+    assert selected["horizon_ms"] == 250
+    assert selected["validation_r2"] == -0.25
+    assert selected["enabled"] is False
+    assert selected["b_flow"] == selected["b_obi"] == selected["b_volume"] == 0.0
 
 
 def test_walk_forward_slices_are_strictly_past_only():

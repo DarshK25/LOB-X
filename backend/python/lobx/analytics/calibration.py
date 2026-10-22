@@ -90,7 +90,11 @@ def fit_hawkes(data: MarketData, max_events: int = 20_000) -> dict:
 
 def _feature_samples(data: MarketData, hawkes: dict, sigma: float, horizon_ms: int,
                      sample_ms: int = 100) -> tuple[np.ndarray, np.ndarray]:
-    """Features (flow*sigma, obi*sigma) and the realised mid change."""
+    """Past-only features and the realised future mid change.
+
+    Columns are Hawkes flow, L1 imbalance and signed recent trade volume,
+    each scaled by current sigma so coefficients remain dimensionless.
+    """
     fe = FeatureEngine(data.tick_size, HawkesParams.from_dict(hawkes["buy"]),
                        HawkesParams.from_dict(hawkes["sell"]), sigma_seed=sigma, calibrated=True)
     rows_t, rows_x = [], []
@@ -104,13 +108,14 @@ def _feature_samples(data: MarketData, hawkes: dict, sigma: float, horizon_ms: i
         if ts >= next_t:
             st = fe.state(ts)
             rows_t.append(ts)
-            rows_x.append((st.flow_imbalance * st.sigma, st.imbalance * st.sigma, st.mid))
+            rows_x.append((st.flow_imbalance * st.sigma, st.imbalance * st.sigma,
+                           st.signed_volume_imbalance * st.sigma, st.mid))
             next_t = ts + sample_ms
     t = np.asarray(rows_t, dtype=np.int64)
     X = np.asarray(rows_x, dtype=float)
     valid = t + horizon_ms <= data.book_ts[-1]
     fut = np.searchsorted(data.book_ts, t[valid] + horizon_ms, side="right") - 1
-    return X[valid, :2], data.mids[fut] - X[valid, 2]
+    return X[valid, :3], data.mids[fut] - X[valid, 3]
 
 
 def _r2(y: np.ndarray, pred: np.ndarray) -> float:
@@ -120,8 +125,9 @@ def _r2(y: np.ndarray, pred: np.ndarray) -> float:
 def fit_fair_value(data: MarketData, hawkes: dict, sigma: float, horizon_ms: int = 2_000,
                    ridge: float = 1e-6) -> dict:
     F, y = _feature_samples(data, hawkes, sigma, horizon_ms)
-    coef = np.linalg.solve(F.T @ F + ridge * np.eye(2), F.T @ y)
+    coef = np.linalg.solve(F.T @ F + ridge * np.eye(F.shape[1]), F.T @ y)
     return {"b_micro": 0.0, "b_flow": float(coef[0]), "b_obi": float(coef[1]),
+            "b_volume": float(coef[2]),
             "r2_in_sample": _r2(y, F @ coef), "horizon_ms": horizon_ms, "samples": int(len(y))}
 
 
@@ -129,15 +135,41 @@ def fair_value_r2(data: MarketData, calib: dict) -> float:
     """R^2 of the frozen in-sample fair-value model on another window."""
     fv = calib["fair_value"]
     F, y = _feature_samples(data, calib["hawkes"], calib["sigma"], fv["horizon_ms"])
-    coef = np.array([fv["b_flow"], fv["b_obi"]])
+    coef = np.array([fv["b_flow"], fv["b_obi"], fv.get("b_volume", 0.0)])
     return _r2(y, F @ coef)
 
 
-def calibrate(data: MarketData) -> dict:
+def select_fair_value(train: MarketData, validation: MarketData, calib: dict,
+                      horizons_ms: tuple[int, ...] = (250, 500, 1_000, 2_000, 5_000)) -> dict:
+    """Select a prediction horizon on a later fold and gate a harmful model."""
+    candidates = []
+    for horizon_ms in horizons_ms:
+        fair = fit_fair_value(train, calib["hawkes"], calib["sigma"], horizon_ms)
+        trial = {**calib, "fair_value": fair}
+        candidates.append((fair_value_r2(validation, trial), fair))
+    score, selected = max(candidates, key=lambda item: item[0])
+    selected = dict(selected)
+    selected["validation_r2"] = float(score)
+    selected["candidate_r2"] = {
+        str(fair["horizon_ms"]): float(r2) for r2, fair in candidates
+    }
+    selected["enabled"] = bool(score > 0.0)
+    if not selected["enabled"]:
+        for key in ("b_micro", "b_flow", "b_obi", "b_volume"):
+            selected[key] = 0.0
+    return selected
+
+
+def calibrate(data: MarketData, fair_horizon_ms: int = 2_000,
+              fair_enabled: bool = True) -> dict:
     sigma = fit_sigma(data)
     arrival = fit_arrival(data)
     hawkes = fit_hawkes(data)
-    fair = fit_fair_value(data, hawkes, sigma)
+    fair = fit_fair_value(data, hawkes, sigma, horizon_ms=fair_horizon_ms)
+    fair["enabled"] = fair_enabled
+    if not fair_enabled:
+        for key in ("b_micro", "b_flow", "b_obi", "b_volume"):
+            fair[key] = 0.0
     return {
         "window": data.name,
         "venue": data.venue,

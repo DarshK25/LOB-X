@@ -123,7 +123,14 @@ def replay_session(session: Session, build_suite: SuiteFactory | None = None,
             calib = e["calib"]
             features.set_hawkes(HawkesParams.from_dict(calib["hawkes"]["buy"]),
                                 HawkesParams.from_dict(calib["hawkes"]["sell"]))
-            accounts = [SimAccount(s, config) for s in build_suite(calib, e["quote_qty"])]
+            strategies = build_suite(calib, e["quote_qty"])
+            # Session files store the exact strategy names used at recording
+            # time.  Filtering keeps old recordings deterministic when a new
+            # candidate is later added to the default suite.
+            recorded_names = set(e.get("strategies", ()))
+            if recorded_names:
+                strategies = [s for s in strategies if s.name() in recorded_names]
+            accounts = [SimAccount(s, config) for s in strategies]
             for acc in accounts:
                 acc.listener = lambda kind, fields: log.append({"k": kind, **fields})
             sim = MarketSimulator(features, accounts, decision_ms)

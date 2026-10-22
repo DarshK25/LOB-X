@@ -27,6 +27,8 @@ class MarketState:
     hawkes_ratio: float = 1.0
     flow_imbalance: float = 0.0
     trade_rate: float = 0.0
+    signed_volume_imbalance: float = 0.0
+    volume_toxicity: float = 0.0
 
     @property
     def mid(self) -> float:
