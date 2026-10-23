@@ -15,6 +15,9 @@ Usage
   # Custom parameters:
   python scripts/run_live_strategy.py --strategy as --gamma 0.05 --kappa 2.0 --horizon 600
 
+  # Explicit data calibration artifact:
+  python scripts/run_live_strategy.py --strategy as --calibration-artifact reports/calibration.json
+
 What you'll see in the log
 ──────────────────────────
 Every ~10 seconds (100 depth events):
@@ -39,11 +42,18 @@ from pathlib import Path
 sys.path.insert(0, "backend/python")
 
 from lobx.market_data.collector import Collector
+from lobx.analytics.calibration import CalibrationArtifact, load_calibration_artifact
 from lobx.strategy.fixed_spread import FixedSpreadStrategy
 from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
 from lobx.live.quote_loop import StrategyRunner
 from lobx.execution.shadow_engine import ExecutionAssumptions
-from lobx.risk import MarketMakingRiskConfig
+from lobx.execution.unwind import UnwindConfig
+from lobx.risk import (
+    HawkesParameters,
+    HawkesRiskConfig,
+    MarketMakingRiskConfig,
+    load_hawkes_parameters,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,26 +62,44 @@ logging.basicConfig(
 )
 
 
-def build_strategy(args: argparse.Namespace):
+def build_strategy(
+    args: argparse.Namespace,
+    calibration: CalibrationArtifact | None = None,
+):
     if args.strategy == "fixed":
         return FixedSpreadStrategy(half_spread=args.half_spread, qty=args.qty)
     return AvellanedaStoikovStrategy(
         gamma=args.gamma,
-        kappa=args.kappa,
+        kappa=calibration.kappa if calibration is not None else args.kappa,
         horizon_seconds=args.horizon,
         qty=args.qty,
         min_spread=args.min_spread,
+        sigma_override=calibration.sigma if calibration is not None else None,
     )
 
 
 async def main(args: argparse.Namespace) -> None:
+    calibration = (
+        load_calibration_artifact(
+            args.calibration_artifact,
+            require_usable=not args.allow_uncalibrated,
+        )
+        if args.calibration_artifact is not None
+        else None
+    )
     collector = Collector(
         symbol=args.symbol,
         enable_engine_mirror=not args.no_engine_mirror,
         data_dir=args.data_dir,
         enable_storage=args.record_market_data,
     )
-    strategy = build_strategy(args)
+    strategy = build_strategy(args, calibration)
+    hawkes_parameters = (
+        load_hawkes_parameters(args.hawkes_artifact)
+        if args.hawkes_artifact is not None
+        else HawkesParameters(args.hawkes_mu, args.hawkes_alpha, args.hawkes_beta)
+    )
+    hawkes_enabled = args.hawkes_risk or args.hawkes_artifact is not None
     runner = StrategyRunner(
         collector,
         strategy,
@@ -86,6 +114,23 @@ async def main(args: argparse.Namespace) -> None:
             max_position=args.max_position,
             max_order_qty=args.qty,
             max_drawdown=args.max_drawdown,
+            hawkes=(
+                HawkesRiskConfig(
+                    parameters=hawkes_parameters,
+                    elevated_ratio=args.hawkes_elevated_ratio,
+                    cascade_ratio=args.hawkes_cascade_ratio,
+                    elevated_spread_multiplier=args.hawkes_spread_multiplier,
+                    cooldown_ms=args.hawkes_cooldown_ms,
+                )
+                if hawkes_enabled else None
+            ),
+            unwind=(
+                UnwindConfig(
+                    horizon_ms=args.unwind_horizon_ms,
+                    interval_ms=args.unwind_interval_ms,
+                )
+                if args.unwind_plan else None
+            ),
         ),
     )
 
@@ -94,6 +139,10 @@ async def main(args: argparse.Namespace) -> None:
     print(f"  Symbol   : {args.symbol}")
     print(f"  Book     : {book_source}")
     print(f"  Qty      : {args.qty} BTC per side")
+    if calibration is not None:
+        print(f"  Calibration: {args.calibration_artifact} (sigma={calibration.sigma:g}, kappa={calibration.kappa:g})")
+    else:
+        print("  Calibration: placeholder defaults")
     print(f"  Press Ctrl+C to stop.\n")
 
     try:
@@ -164,12 +213,48 @@ def parse_args() -> argparse.Namespace:
                    help="Cancel quotes before matching when older than this age")
     p.add_argument("--fill-ratio", type=float, default=1.0,
                    help="Maximum fraction of each eligible trade available to our quote")
-    p.add_argument("--queue-model", choices=["shadow", "queue_ahead"], default="shadow",
-                   help="Paper fill model; queue_ahead is a stricter L2 approximation")
+    p.add_argument(
+        "--queue-model",
+        choices=["shadow", "queue_ahead", "conservative"],
+        default="shadow",
+        help=(
+            "Paper fill model; shadow is optimistic, queue_ahead consumes "
+            "displayed queue, conservative also advances from L2 reductions"
+        ),
+    )
     p.add_argument("--max-position", type=float, default=0.005,
                    help="Hard absolute BTC inventory limit")
     p.add_argument("--max-drawdown", type=float, default=25.0,
                    help="Hard paper-session drawdown limit in USDT")
+    p.add_argument(
+        "--hawkes-risk", action="store_true",
+        help="Enable explicit Hawkes ELEVATED/CASCADE quote controls (opt-in)",
+    )
+    p.add_argument(
+        "--hawkes-artifact", type=Path, default=None,
+        help="Load calibrated Hawkes mu/alpha/beta JSON and enable Hawkes risk controls",
+    )
+    p.add_argument("--hawkes-mu", type=float, default=1.0)
+    p.add_argument("--hawkes-alpha", type=float, default=0.8)
+    p.add_argument("--hawkes-beta", type=float, default=2.0)
+    p.add_argument("--hawkes-elevated-ratio", type=float, default=2.0)
+    p.add_argument("--hawkes-cascade-ratio", type=float, default=5.0)
+    p.add_argument("--hawkes-spread-multiplier", type=float, default=1.5)
+    p.add_argument("--hawkes-cooldown-ms", type=int, default=1_000)
+    p.add_argument(
+        "--unwind-plan", action="store_true",
+         help="Generate an Almgren-Chriss-style reduce-only unwind plan; never submits orders",
+    )
+    p.add_argument("--unwind-horizon-ms", type=int, default=30_000)
+    p.add_argument("--unwind-interval-ms", type=int, default=1_000)
+    p.add_argument(
+        "--calibration-artifact", type=Path, default=None,
+        help="Explicit v1 calibration artifact to use for AS sigma/kappa; no artifact keeps placeholder defaults",
+    )
+    p.add_argument(
+        "--allow-uncalibrated", action="store_true",
+        help="Allow an invalid calibration artifact and label the session uncalibrated",
+    )
     p.add_argument("--no-engine-mirror", action="store_true",
                    help="Use Python reference book instead of C++ engine")
     p.add_argument("--data-dir", default="data/raw_strategy",

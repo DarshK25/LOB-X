@@ -32,6 +32,8 @@ from collections.abc import Iterable
 
 import pandas as pd
 
+from lobx.analytics.realized_volatility import TimestampAwareRollingRealizedVolatility
+
 
 class EWMAVolatilityEstimator:
     """Rolling EWMA volatility over mid-price log-returns.

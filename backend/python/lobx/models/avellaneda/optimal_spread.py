@@ -13,6 +13,31 @@ from __future__ import annotations
 import math
 
 
+def spread_decomposition(
+    gamma: float,
+    sigma: float,
+    time_remaining: float,
+    kappa: float,
+) -> dict[str, float]:
+    """Return the AS spread's variance, kappa, and total components.
+
+    The returned ``sigma`` is the canonical model input: USD per
+    sqrt(second).  ``time_remaining`` is seconds, so both terms are USD.
+    """
+    if kappa <= 0:
+        raise ValueError("kappa must be positive")
+    if gamma <= 0:
+        raise ValueError("gamma must be positive")
+
+    variance_term = gamma * (sigma ** 2) * time_remaining
+    kappa_term = (2.0 / gamma) * math.log(1.0 + gamma / kappa)
+    return {
+        "variance_term": variance_term,
+        "kappa_term": kappa_term,
+        "spread_total": variance_term + kappa_term,
+    }
+
+
 def optimal_spread(
     gamma: float,
     sigma: float,
@@ -33,14 +58,7 @@ def optimal_spread(
     -------
     Full optimal spread δ*
     """
-    if kappa <= 0:
-        raise ValueError("kappa must be positive")
-    if gamma <= 0:
-        raise ValueError("gamma must be positive")
-
-    risk_term    = gamma * (sigma ** 2) * time_remaining
-    liquidity_term = (2.0 / gamma) * math.log(1.0 + gamma / kappa)
-    return risk_term + liquidity_term
+    return spread_decomposition(gamma, sigma, time_remaining, kappa)["spread_total"]
 
 
 def half_spread(gamma: float, sigma: float, time_remaining: float, kappa: float) -> float:

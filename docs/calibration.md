@@ -17,6 +17,22 @@ In the AS model, the probability of an order fill decays exponentially as it is 
 It represents the risk tolerance of the market maker and is derived here from the explicit maximum-inventory assumption and the real fitted kappa: $\gamma = \frac{1}{I_{max} \cdot \kappa}$. This is a project design heuristic, not a result from Avellaneda--Stoikov or a data fit.
 **Warning**: Never treat $\gamma$ as a data-fit parameter. It is a strategic design choice.
 
+## R-03 calibration usability gate
+
+An artifact is **CALIBRATED** only if every condition below is satisfied:
+
+- $R^2 \ge 0.50$;
+- at least 8 populated observed-distance buckets;
+- regression p-value $< 0.05$;
+- a 95% time-block bootstrap interval using 60-second blocks and 1,000
+  replications has a positive lower bound; and
+- bootstrap upper/lower is at most 5.
+
+The existing pooled four-bucket fit with $\kappa=63.63$ and p-value 0.137 is
+therefore **NOT CALIBRATED**. It must not be loaded into the default AS path.
+The explicit `--allow-uncalibrated` option is available only for labeled
+diagnostic runs.
+
 ## 4. Literature comparison
 
 Avellaneda & Stoikov (2008), *High-frequency trading in a limit order book*, models order-arrival intensity as $A e^{-\kappa\delta}$. The paper does not supply a universal numerical kappa or gamma range: values depend on the asset, quote-distance unit, inventory boundary and horizon. LOB-X therefore compares the **functional form** only and reports kappa in ticks; it does not claim that a numerical value is literature-validated. DOI: [10.1080/14697680701381228](https://doi.org/10.1080/14697680701381228).

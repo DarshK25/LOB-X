@@ -1,4 +1,4 @@
-# Execution — Almgren-Chriss
+# Execution — Almgren-Chriss-style unwind planner
 
 ## Model
 
@@ -25,17 +25,18 @@ where $\kappa = \sqrt{\lambda \sigma^2 / \eta}$.
 | $\gamma$ | Permanent market impact |
 | $\lambda$ | Risk aversion |
 
-## Implementation
+## Implementation status
 
-`backend/python/lobx/models/almgren/`:
-- `trajectory.py` — `optimal_trajectory()`, `trade_list()`
-- `executor.py` — `AlmgrenChrissExecutor` — submits child orders to C++ book
+`backend/python/lobx/execution/unwind.py` contains the current
+`AlmgrenChrissUnwindController`. It generates timestamped, reduce-only broker
+plans. It is a planner, not an exchange executor: it does not submit child
+orders and it is not integrated with a live execution adapter.
 
 ## Usage
 
 ```python
-from lobx.models.almgren import AlmgrenChrissExecutor
-exec = AlmgrenChrissExecutor(book, tid, total_shares=10000, is_sell=True,
-                              T=100, sigma=1.0, eta=0.1, gamma=0.01, lambda_=1e-6)
-# Call exec.step() once per simulation tick
+from lobx.execution.unwind import AlmgrenChrissUnwindController, UnwindConfig
+planner = AlmgrenChrissUnwindController(UnwindConfig(horizon_ms=30_000))
+plan = planner.generate_plan(position=0.005, timestamp_ms=0, reason="position_breach")
+# plan.to_broker_orders() returns reduce-only payloads; no order is submitted.
 ```

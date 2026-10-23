@@ -6,10 +6,16 @@ from lobx.execution.shadow_engine import ExecutionAssumptions
 from lobx.market_data.trade_stream import TradeTick
 
 
-def make_trade(price: float, qty: float, is_buyer_maker: bool, trade_id: int = 1) -> TradeTick:
+def make_trade(
+    price: float,
+    qty: float,
+    is_buyer_maker: bool,
+    trade_id: int = 1,
+    event_time: int = 1_000,
+) -> TradeTick:
     """Helper: build a TradeTick with the given fill parameters."""
     return TradeTick(
-        event_time=1_000,
+        event_time=event_time,
         trade_id=trade_id,
         price=price,
         qty=qty,
@@ -252,6 +258,126 @@ class TestFills:
         assert event["market_ask"] == pytest.approx(101.0)
         assert event["spread"] == pytest.approx(2.0)
         assert event["inventory"] == pytest.approx(0.5)
+
+
+class TestConservativeQueueExecution:
+    """Regression coverage for displayed-depth queue tracking."""
+
+    def _engine(self, *, queue_model: str = "conservative", latency_ms: int = 0):
+        return ShadowQuoteEngine(
+            assumptions=ExecutionAssumptions(
+                queue_model=queue_model,
+                latency_ms=latency_ms,
+            )
+        )
+
+    def test_initial_queue_uses_displayed_level_before_quote(self):
+        engine = self._engine()
+        engine.on_depth_update("bid", 99.0, 5.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(5.0)
+        assert engine.resting_bid.queue_position.front_qty == pytest.approx(5.0)
+
+    def test_initial_queue_accepts_legacy_supplied_ahead_quantity(self):
+        engine = self._engine()
+        engine.update_quotes(
+            make_quotes(99.0, 101.0), timestamp=0, bid_queue_ahead=5.0
+        )
+
+        engine.on_depth_update("bid", 99.0, 3.0, timestamp=1)
+
+        assert engine.resting_bid.queue_ahead_qty < 5.0
+
+    def test_depth_increase_does_not_advance_but_reduction_does(self):
+        engine = self._engine()
+        engine.on_depth_update("bid", 99.0, 5.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        engine.on_depth_update("bid", 99.0, 7.0, timestamp=1)
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(5.0)
+
+        engine.on_depth_update("bid", 99.0, 4.0, timestamp=2)
+        assert engine.resting_bid.queue_ahead_qty < 5.0
+        assert any(
+            event["event_type"] == "QUEUE_UPDATED"
+            and event["reason"] == "displayed_depth_update"
+            for event in engine.events
+        )
+
+    def test_trade_consumption_is_not_double_counted_by_following_depth_update(self):
+        engine = self._engine()
+        engine.on_depth_update("bid", 99.0, 5.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        engine.on_trade(make_trade(99.0, 2.0, True, event_time=1))
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(3.0)
+        assert engine.fill_count == 0
+
+        # The public depth update reflects the same two-unit trade. The queue
+        # must remain at three, rather than consume those units a second time.
+        engine.on_depth_update("bid", 99.0, 3.0, timestamp=2)
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(3.0)
+
+    def test_latency_blocks_trade_and_queue_consumption_until_active(self):
+        engine = self._engine(latency_ms=100)
+        engine.on_depth_update("bid", 99.0, 2.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        engine.on_trade(make_trade(99.0, 2.0, True, event_time=50))
+        assert engine.fill_count == 0
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(2.0)
+
+        engine.on_trade(make_trade(99.0, 2.0, True, trade_id=2, event_time=100))
+        assert engine.fill_count == 0
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(0.0)
+
+        engine.on_trade(make_trade(99.0, 0.001, True, trade_id=3, event_time=101))
+        assert engine.fill_count == 1
+
+    def test_cancellation_discards_old_queue_and_old_level_cannot_fill(self):
+        engine = self._engine()
+        engine.on_depth_update("bid", 99.0, 2.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+        old_bid = engine.resting_bid
+
+        engine.update_quotes(make_quotes(98.0, 101.0), timestamp=1)
+        engine.on_depth_update("bid", 99.0, 0.0, timestamp=2)
+        engine.on_trade(make_trade(99.0, 1.0, True, event_time=3))
+
+        assert old_bid.status == "CANCELED"
+        assert engine.fill_count == 0
+        assert engine.resting_bid.price == pytest.approx(98.0)
+
+    def test_depth_reduction_alone_never_creates_a_fill(self):
+        engine = self._engine()
+        engine.on_depth_update("bid", 99.0, 2.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        engine.on_depth_update("bid", 99.0, 0.0, timestamp=1)
+
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(0.0)
+        assert engine.fill_count == 0
+        assert not any(event["event_type"] == "FILL" for event in engine.events)
+
+    def test_queue_ahead_mode_remains_trade_compatible_and_tracks_depth(self):
+        engine = self._engine(queue_model="queue_ahead")
+        engine.on_depth_update("bid", 99.0, 2.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+
+        engine.on_trade(make_trade(99.0, 1.0, True, event_time=1))
+        assert engine.fill_count == 0
+        engine.on_depth_update("bid", 99.0, 1.0, timestamp=2)
+        assert engine.resting_bid.queue_ahead_qty == pytest.approx(1.0)
+
+    def test_shadow_mode_stays_immediate_despite_depth_notifications(self):
+        engine = ShadowQuoteEngine()
+        engine.on_depth_update("bid", 99.0, 5.0, timestamp=0)
+        engine.update_quotes(make_quotes(99.0, 101.0), timestamp=0)
+        engine.on_depth_update("bid", 99.0, 1.0, timestamp=1)
+        engine.on_trade(make_trade(99.0, 0.01, True, event_time=2))
+
+        assert engine.fill_count == 1
 
 
 # ── Task 4.11 regression tests — parameter isolation & quote sensitivity ──────

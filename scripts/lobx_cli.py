@@ -386,7 +386,7 @@ class LobxCLI:
 
             # AS Parameters: gamma (risk aversion), sigma (volatility), T-t (horizon), kappa (order arrival intensity)
             gamma = 0.1
-            sigma = mid * 0.0005   # ~0.05% short-term volatility
+            sigma_log = 0.0005     # ~0.05% log-volatility per sqrt-second
             kappa = 1.5
 
             strategy = AvellanedaStoikovStrategy(
@@ -398,7 +398,7 @@ class LobxCLI:
                 best_bid_qty=1.0,
                 best_ask=ask,
                 best_ask_qty=1.0,
-                volatility=sigma,
+                volatility=sigma_log,
                 inventory=inventory,
             )
             quotes = strategy.on_tick(state)

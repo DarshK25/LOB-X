@@ -5,6 +5,7 @@ from lobx.strategy.base import MarketState
 from lobx.strategy.fixed_spread import FixedSpreadStrategy
 from lobx.strategy.avellaneda import AvellanedaStoikovStrategy
 from lobx.models.avellaneda.model import calculate_quote
+from lobx.models.avellaneda.optimal_spread import spread_decomposition
 from lobx.strategy.no_trade import NoTradeStrategy
 from lobx.strategy.inventory_skew import InventorySkewStrategy
 
@@ -80,7 +81,7 @@ class TestAvellanedaStoikovStrategy:
         state = make_state(
             mid_price=60000.0,
             inventory=0.01,
-            volatility=0.25,
+            volatility=0.25 / 60000.0,
             timestamp=1_000,
         )
         strategy = AvellanedaStoikovStrategy(
@@ -100,12 +101,29 @@ class TestAvellanedaStoikovStrategy:
         )
         assert actual.bid.price == round(expected.bid, 2)
         assert actual.ask.price == round(expected.ask, 2)
+        assert strategy.last_quote_audit["sigma_log"] == pytest.approx(0.25 / 60000.0)
+        assert strategy.last_quote_audit["sigma_usd"] == pytest.approx(0.25)
+        assert strategy.last_quote_audit["time_remaining"] == pytest.approx(300.0)
+        assert strategy.last_quote_audit["spread_total"] == pytest.approx(
+            strategy.last_quote_audit["variance_term"]
+            + strategy.last_quote_audit["kappa_term"]
+        )
 
     def test_returns_valid_quote_pair(self):
         strat = AvellanedaStoikovStrategy(gamma=0.1, kappa=1.5)
         q = strat.on_tick(make_state())
         assert q.bid is not None
         assert q.ask is not None
+
+    def test_calibration_floor_and_rolling_vol_share_log_units_before_conversion(self):
+        strategy = AvellanedaStoikovStrategy(
+            gamma=0.1,
+            kappa=1.5,
+            sigma_override=0.002,
+        )
+        strategy.on_tick(make_state(mid_price=100.0, volatility=0.001))
+        assert strategy.last_quote_audit["sigma_log"] == pytest.approx(0.002)
+        assert strategy.last_quote_audit["sigma_usd"] == pytest.approx(0.2)
 
     def test_bid_strictly_below_ask(self):
         strat = AvellanedaStoikovStrategy(gamma=0.1, kappa=1.5, min_spread=0.02)
@@ -121,11 +139,11 @@ class TestAvellanedaStoikovStrategy:
         strat_neutral = AvellanedaStoikovStrategy(gamma=2.0, kappa=1.5, horizon_seconds=300.0)
         strat_long    = AvellanedaStoikovStrategy(gamma=2.0, kappa=1.5, horizon_seconds=300.0)
 
-        # sigma=1.0 (e.g. $1 per tick vol), inventory=10 long
+        # sigma_log=1/60000 gives sigma_usd=1.0 at this $60,000 mid.
         q_neutral = strat_neutral.on_tick(make_state(
-            mid_price=60000.0, inventory=0.0, volatility=1.0))
+            mid_price=60000.0, inventory=0.0, volatility=1.0 / 60000.0))
         q_long    = strat_long.on_tick(make_state(
-            mid_price=60000.0, inventory=10.0, volatility=1.0))
+            mid_price=60000.0, inventory=10.0, volatility=1.0 / 60000.0))
 
         # With long inventory, reservation price < mid → quotes shift down.
         assert q_long.bid.price < q_neutral.bid.price, (
@@ -151,8 +169,8 @@ class TestAvellanedaStoikovStrategy:
         Use large gamma/sigma so the shift survives rounding to 2dp.
         """
         strat = AvellanedaStoikovStrategy(gamma=2.0, kappa=1.5, horizon_seconds=300.0)
-        q1 = strat.on_tick(make_state(mid_price=60000.0, inventory=0.0,  volatility=1.0))
-        q2 = strat.on_tick(make_state(mid_price=60000.0, inventory=10.0, volatility=1.0))
+        q1 = strat.on_tick(make_state(mid_price=60000.0, inventory=0.0,  volatility=1.0 / 60000.0))
+        q2 = strat.on_tick(make_state(mid_price=60000.0, inventory=10.0, volatility=1.0 / 60000.0))
         assert q1.bid.price != q2.bid.price, (
             f"Inventory must affect quotes: q1.bid={q1.bid.price}, q2.bid={q2.bid.price}"
         )
@@ -165,6 +183,15 @@ def test_no_trade_strategy_never_quotes():
     quotes = NoTradeStrategy().on_tick(make_state())
     assert quotes.bid is None
     assert quotes.ask is None
+
+
+def test_spread_decomposition_matches_independent_as_terms():
+    terms = spread_decomposition(gamma=0.2, sigma=3.0, time_remaining=10.0, kappa=1.5)
+    variance = 0.2 * (3.0 ** 2) * 10.0
+    liquidity = (2.0 / 0.2) * math.log(1.0 + 0.2 / 1.5)
+    assert terms["variance_term"] == pytest.approx(variance)
+    assert terms["kappa_term"] == pytest.approx(liquidity)
+    assert terms["spread_total"] == pytest.approx(variance + liquidity)
 
 
 def test_market_state_from_book_calculates_microstructure_fields():

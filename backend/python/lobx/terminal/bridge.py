@@ -76,6 +76,12 @@ def strategy_snapshot(
         sigma=_opt_float(audit.get("sigma")),
         tau=_opt_float(audit.get("time_remaining_seconds")),
         hawkes_intensity=_opt_float(audit.get("hawkes_intensity")),
+        variance_term=_opt_float(audit.get("variance_term")),
+        kappa_term=_opt_float(audit.get("kappa_term")),
+        spread_total=_opt_float(audit.get("spread_total")),
+        sigma_log=_opt_float(audit.get("sigma_log")),
+        sigma_usd=_opt_float(audit.get("sigma_usd")),
+        time_remaining=_opt_float(audit.get("time_remaining")),
         details=dict(audit),
     )
 

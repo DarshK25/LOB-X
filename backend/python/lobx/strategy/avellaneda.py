@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import math
 from lobx.strategy.base import MarketState, Quote, QuotePair, Strategy
-from lobx.models.avellaneda.model import calculate_quote
+from lobx.models.avellaneda.model import calculate_quote, to_usd_sigma
+from lobx.models.avellaneda.optimal_spread import spread_decomposition
 from lobx.models.hawkes.intensity import HawkesIntensity
 
 
@@ -52,6 +53,7 @@ class AvellanedaStoikovStrategy(Strategy):
         hawkes_mu:       float = 1.0,
         hawkes_alpha:    float = 1.5,
         hawkes_beta:     float = 2.0,
+        sigma_override:  float | None = None,
     ) -> None:
         self.gamma           = gamma
         self.kappa           = kappa
@@ -61,6 +63,7 @@ class AvellanedaStoikovStrategy(Strategy):
         self.use_hawkes      = use_hawkes
         self.use_microprice  = use_microprice
         self.use_toxicity    = use_toxicity
+        self.sigma_override   = sigma_override
 
         self._start_time_ms: int | None = None
         self._hawkes: HawkesIntensity | None = (
@@ -76,7 +79,17 @@ class AvellanedaStoikovStrategy(Strategy):
 
         elapsed_s     = (state.timestamp - self._start_time_ms) / 1_000.0
         time_remaining = max(self.horizon_seconds - elapsed_s, 0.01)
-        sigma = max(state.volatility, 1e-8)
+        # The replay/live state carries the rolling, timestamp-aware realized
+        # volatility.  A persisted calibration is used as a warm-up floor, not
+        # as a permanent replacement for the rolling estimate.
+        rolling_sigma_log = max(state.volatility, 0.0)
+        sigma_floor_log = max(self.sigma_override or 0.0, 0.0)
+        # This is the sole conversion boundary from log-volatility to the USD
+        # volatility consumed by the canonical AS equations.
+        rolling_sigma_usd = to_usd_sigma(rolling_sigma_log, state.mid_price)
+        floor_sigma_usd = to_usd_sigma(sigma_floor_log, state.mid_price)
+        sigma_usd = max(rolling_sigma_usd, floor_sigma_usd, 1e-8)
+        sigma_log = sigma_usd / state.mid_price
 
         # Track recent mids for toxicity/velocity calculation
         self._recent_mids.append((state.timestamp, state.mid_price))
@@ -107,9 +120,15 @@ class AvellanedaStoikovStrategy(Strategy):
             mid=state.mid_price,
             inventory=state.inventory,
             gamma=self.gamma,
-            sigma=sigma,
+            sigma=sigma_usd,
             time_remaining=time_remaining,
             kappa=effective_kappa,
+        )
+        spread_terms = spread_decomposition(
+            self.gamma,
+            sigma_usd,
+            time_remaining,
+            effective_kappa,
         )
         r = model_quote.reservation_price
         hs = model_quote.full_spread / 2.0
@@ -148,10 +167,22 @@ class AvellanedaStoikovStrategy(Strategy):
             "kappa": self.kappa,
             "effective_kappa": effective_kappa,
             "hawkes_intensity": hawkes_intensity,
-            "sigma": sigma,
+            # ``sigma`` remains the legacy audit key and is now explicitly in
+            # the model's USD per sqrt-second unit.
+            "sigma": sigma_usd,
+            "sigma_log": sigma_log,
+            "sigma_usd": sigma_usd,
+            "rolling_sigma_log": rolling_sigma_log,
+            "rolling_sigma_usd": rolling_sigma_usd,
+            "calibration_floor_sigma_log": sigma_floor_log,
+            "calibration_floor_sigma_usd": floor_sigma_usd,
             "time_remaining_seconds": time_remaining,
+            "time_remaining": time_remaining,
             "reservation_price": r,
             "model_full_spread": model_quote.full_spread,
+            "variance_term": spread_terms["variance_term"],
+            "kappa_term": spread_terms["kappa_term"],
+            "spread_total": spread_terms["spread_total"],
             "applied_half_spread": hs,
             "micro_skew": micro_skew,
             "toxic_bid_penalty": toxic_bid_penalty,

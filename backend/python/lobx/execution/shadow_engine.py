@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 from lobx.execution.inventory import InventoryTracker
 from lobx.execution.portfolio import PortfolioEngine
+from lobx.execution.queue_model import ProbabilisticQueueModel, QueuePosition
 from lobx.market_data.trade_stream import TradeTick
 from lobx.strategy.base import MarketState, QuotePair
 
@@ -40,7 +41,9 @@ class ExecutionAssumptions:
 
     ``shadow`` is deliberately optimistic: an eligible aggressor trade can
     immediately fill our quote. ``queue_ahead`` first consumes the displayed
-    quantity that was ahead of us when the quote was placed.  It is still an
+    quantity that was ahead of us when the quote was placed. ``conservative``
+    additionally advances that position from quote-level L2 reductions using
+    the deterministic probabilistic queue tracker. All queue modes remain an
     approximation because public L2 data cannot reveal true queue priority.
     """
 
@@ -57,8 +60,10 @@ class ExecutionAssumptions:
             raise ValueError("latency_ms cannot be negative")
         if not 0 < self.fill_ratio <= 1:
             raise ValueError("fill_ratio must be in (0, 1]")
-        if self.queue_model not in {"shadow", "queue_ahead"}:
-            raise ValueError("queue_model must be 'shadow' or 'queue_ahead'")
+        if self.queue_model not in {"shadow", "queue_ahead", "conservative"}:
+            raise ValueError(
+                "queue_model must be 'shadow', 'queue_ahead', or 'conservative'"
+            )
         if self.max_quote_age_ms is not None and self.max_quote_age_ms < 0:
             raise ValueError("max_quote_age_ms cannot be negative")
 
@@ -84,6 +89,9 @@ class ShadowOrder:
     placed_at:     int
     active_at:     int
     queue_ahead_qty: float = 0.0
+    displayed_depth_qty: float = 0.0
+    queue_position: QueuePosition | None = None
+    trade_qty_since_depth: float = 0.0
     activation_logged: bool = False
     status: str = "WAITING"
     canceled_at: int | None = None
@@ -114,6 +122,17 @@ class ShadowQuoteEngine:
     _next_event_id: int = field(default=1, init=False, repr=False)
     _next_order_id: int = field(default=1, init=False, repr=False)
     _market_context: dict = field(default_factory=dict, init=False, repr=False)
+    _displayed_depth: dict[tuple[str, float], float] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _quotes_placed: int = field(default=0, init=False, repr=False)
+    _queue_ahead_at_placement: list[float] = field(
+        default_factory=list, init=False, repr=False
+    )
+    _depth_advance_events: int = field(default=0, init=False, repr=False)
+    queue_position_model: ProbabilisticQueueModel = field(
+        default_factory=ProbabilisticQueueModel, repr=False
+    )
 
     @property
     def inventory(self) -> InventoryTracker:
@@ -174,6 +193,131 @@ class ShadowQuoteEngine:
             "reason": "strategy_decision",
         })
 
+    def on_depth_update(
+        self,
+        side: str,
+        price: float,
+        qty: float,
+        timestamp: int,
+    ) -> None:
+        """Record one absolute displayed L2 level update.
+
+        Depth feeds publish the total quantity at a price, rather than a
+        delta.  The engine keeps the previous quantity so it can distinguish
+        new displayed liquidity from a reduction of liquidity that may have
+        advanced a resting quote.  Notifications are intentionally harmless
+        when no order is resting at the level; this lets replay and live
+        callers feed every depth row without maintaining a second quote-level
+        filter.
+        """
+        if side not in {"bid", "ask"}:
+            raise ValueError("side must be 'bid' or 'ask'")
+        if qty < 0:
+            raise ValueError("displayed depth quantity must be non-negative")
+
+        key = (side, float(price))
+        order = self._order_at_level(side, float(price))
+        previous_qty = self._displayed_depth.get(
+            key,
+            order.displayed_depth_qty if order is not None else 0.0,
+        )
+        displayed_qty = float(qty)
+        if displayed_qty == 0.0:
+            self._displayed_depth.pop(key, None)
+        else:
+            self._displayed_depth[key] = displayed_qty
+
+        if self.assumptions.queue_model == "shadow":
+            return
+
+        if order is None:
+            return
+
+        previous_queue_ahead = order.queue_ahead_qty
+        if self.assumptions.queue_model == "conservative":
+            position = order.queue_position
+            if position is None:
+                position = self.queue_position_model.initialize_position(
+                    order.queue_ahead_qty
+                )
+                order.queue_position = position
+            self.queue_position_model.on_depth_change(
+                position,
+                prev_level_qty=previous_qty,
+                new_level_qty=displayed_qty,
+            )
+            order.queue_ahead_qty = position.front_qty
+        else:
+            # queue_ahead retains its simple, conservative interpretation:
+            # reductions not explained by already-observed trades are treated
+            # as quantity ahead of our quote.  The trade accumulator prevents
+            # a public trade from being counted once in on_trade() and again
+            # when the corresponding absolute depth update arrives.
+            unexplained_reduction = max(
+                previous_qty - displayed_qty - order.trade_qty_since_depth,
+                0.0,
+            )
+            order.trade_qty_since_depth = 0.0
+            order.queue_ahead_qty = max(
+                order.queue_ahead_qty - unexplained_reduction,
+                0.0,
+            )
+
+        queue_advance = previous_queue_ahead - order.queue_ahead_qty
+        depth_advanced = (
+            displayed_qty < previous_qty
+            and queue_advance > 1e-12
+        )
+        if depth_advanced:
+            self._depth_advance_events += 1
+
+        order.displayed_depth_qty = displayed_qty
+        self.emit_event({
+            "event_type": "QUEUE_UPDATED",
+            "timestamp": timestamp,
+            "order_id": order.order_id,
+            "side": side,
+            "price": order.price,
+            "queue_ahead_qty": order.queue_ahead_qty,
+            "displayed_depth_qty": displayed_qty,
+            "previous_displayed_depth_qty": previous_qty,
+            "depth_change": displayed_qty - previous_qty,
+            "queue_advance_qty": max(queue_advance, 0.0),
+            "depth_advanced": depth_advanced,
+            "remaining_qty": order.remaining_qty,
+            "queue_model": self.assumptions.queue_model,
+            "reason": "displayed_depth_update",
+        })
+
+    def _order_at_level(self, side: str, price: float) -> ShadowOrder | None:
+        """Return the currently live order at one quote level, if any."""
+        order = self._bid if side == "bid" else self._ask
+        if order is None or abs(order.price - price) > 1e-9:
+            return None
+        if order.status in {"CANCELED", "EXPIRED", "FILLED"}:
+            return None
+        return order
+
+    def _initial_queue_ahead(self, side: str, price: float, supplied: float) -> float:
+        """Choose the displayed level quantity used when a quote joins."""
+        if supplied > 0.0:
+            return max(supplied, 0.0)
+        return max(self._displayed_depth.get((side, float(price)), supplied), 0.0)
+
+    def _new_queue_position(
+        self, side: str, price: float, supplied: float
+    ) -> tuple[float, float, QueuePosition | None]:
+        """Build queue state for a newly-created order without affecting shadow."""
+        if self.assumptions.queue_model == "shadow":
+            return max(supplied, 0.0), 0.0, None
+        queue_ahead = self._initial_queue_ahead(side, price, supplied)
+        position = (
+            self.queue_position_model.initialize_position(queue_ahead)
+            if self.assumptions.queue_model == "conservative"
+            else None
+        )
+        return queue_ahead, queue_ahead, position
+
     def update_quotes(
         self,
         quotes: QuotePair,
@@ -210,6 +354,9 @@ class ShadowQuoteEngine:
             or abs(self._bid.qty - quotes.bid.qty) > 1e-12
         ):
             cancel(self._bid, "bid")
+            bid_queue, bid_depth, bid_position = self._new_queue_position(
+                "bid", quotes.bid.price, bid_queue_ahead
+            )
             self._bid = ShadowOrder(
                 order_id=self._next_order_id,
                 side="bid",
@@ -218,9 +365,13 @@ class ShadowQuoteEngine:
                 remaining_qty=quotes.bid.qty,
                 placed_at=timestamp,
                 active_at=timestamp + self.assumptions.latency_ms,
-                queue_ahead_qty=max(bid_queue_ahead, 0.0),
+                queue_ahead_qty=bid_queue,
+                displayed_depth_qty=bid_depth,
+                queue_position=bid_position,
             )
             self._next_order_id += 1
+            self._quotes_placed += 1
+            self._queue_ahead_at_placement.append(self._bid.queue_ahead_qty)
             self.emit_event({
                 "event_type": "ORDER_CREATED",
                 "timestamp": timestamp,
@@ -251,6 +402,9 @@ class ShadowQuoteEngine:
             or abs(self._ask.qty - quotes.ask.qty) > 1e-12
         ):
             cancel(self._ask, "ask")
+            ask_queue, ask_depth, ask_position = self._new_queue_position(
+                "ask", quotes.ask.price, ask_queue_ahead
+            )
             self._ask = ShadowOrder(
                 order_id=self._next_order_id,
                 side="ask",
@@ -259,9 +413,13 @@ class ShadowQuoteEngine:
                 remaining_qty=quotes.ask.qty,
                 placed_at=timestamp,
                 active_at=timestamp + self.assumptions.latency_ms,
-                queue_ahead_qty=max(ask_queue_ahead, 0.0),
+                queue_ahead_qty=ask_queue,
+                displayed_depth_qty=ask_depth,
+                queue_position=ask_position,
             )
             self._next_order_id += 1
+            self._quotes_placed += 1
+            self._queue_ahead_at_placement.append(self._ask.queue_ahead_qty)
             self.emit_event({
                 "event_type": "ORDER_CREATED",
                 "timestamp": timestamp,
@@ -364,13 +522,32 @@ class ShadowQuoteEngine:
             return
         available_qty = trade.qty * self.assumptions.fill_ratio
         queue_consumed = 0.0
-        if self.assumptions.queue_model == "queue_ahead":
-            if (order.side == "bid" and trade.price < order.price) or (
+        if self.assumptions.queue_model in {"queue_ahead", "conservative"}:
+            crossed_through = (order.side == "bid" and trade.price < order.price) or (
                 order.side == "ask" and trade.price > order.price
-            ):
+            )
+            if crossed_through:
+                # A trade beyond our level proves that the market swept
+                # through the quote. Preserve the legacy queue_ahead behavior
+                # and make the deterministic conservative mode agree: the
+                # public trade's quantity is not reused as quote-level fill
+                # capacity, so this path clears the queue without subtracting
+                # it from available_qty.
                 order.queue_ahead_qty = 0.0
-            queue_consumed = min(order.queue_ahead_qty, available_qty)
-            order.queue_ahead_qty -= queue_consumed
+                if order.queue_position is not None:
+                    order.queue_position.front_qty = 0.0
+            else:
+                previous_queue = order.queue_ahead_qty
+                if order.queue_position is not None:
+                    self.queue_position_model.on_trade(
+                        order.queue_position, available_qty
+                    )
+                    order.queue_ahead_qty = order.queue_position.front_qty
+                else:
+                    queue_consumed = min(order.queue_ahead_qty, available_qty)
+                    order.queue_ahead_qty -= queue_consumed
+                queue_consumed = min(previous_queue, available_qty)
+                order.trade_qty_since_depth += available_qty
             available_qty -= queue_consumed
             self.emit_event({
                 "event_type": "QUEUE_UPDATED",
@@ -380,6 +557,7 @@ class ShadowQuoteEngine:
                 "price": order.price,
                 "queue_ahead_qty": order.queue_ahead_qty,
                 "remaining_qty": order.remaining_qty,
+                "queue_model": self.assumptions.queue_model,
                 "trade_id": trade.trade_id,
                 "reason": "aggressor_filled_at_price",
             })
@@ -409,6 +587,7 @@ class ShadowQuoteEngine:
             "trade_id":  trade.trade_id,
             "timestamp": trade.event_time,
             "fee":       fee,
+            "is_maker":  True,
             "execution_edge": execution_edge,
             "gross_pnl": pnl["gross_pnl"],
             "net_pnl": pnl["net_pnl"],
@@ -513,6 +692,42 @@ class ShadowQuoteEngine:
     @property
     def fill_count(self) -> int:
         return len(self.fills)
+
+    @property
+    def quotes_placed(self) -> int:
+        """Number of individual bid/ask orders created by the engine."""
+        return self._quotes_placed
+
+    @property
+    def depth_advance_events(self) -> int:
+        """Number of displayed-depth reductions that advanced a live quote."""
+        return self._depth_advance_events
+
+    @property
+    def mean_queue_ahead_at_placement(self) -> float:
+        """Mean displayed queue ahead when each individual quote was created."""
+        if not self._queue_ahead_at_placement:
+            return 0.0
+        return sum(self._queue_ahead_at_placement) / len(self._queue_ahead_at_placement)
+
+    def execution_counters(self, mark_price: float) -> dict[str, float | int]:
+        """Return execution observability counters for this queue mode.
+
+        Fill counters intentionally describe maker fills recorded by this engine;
+        callers that add a forced flatten can report that separate execution in
+        their session-level totals.  P&L values are marked using the supplied
+        price and therefore include the engine's complete current inventory.
+        """
+        return {
+            "quotes_placed": self.quotes_placed,
+            "fills": self.fill_count,
+            "filled_qty": sum(float(fill["qty"]) for fill in self.fills),
+            "mean_queue_ahead_at_placement": self.mean_queue_ahead_at_placement,
+            "depth_advance_events": self.depth_advance_events,
+            "gross": self.portfolio.gross_pnl(mark_price),
+            "fees": self.fees_paid,
+            "net": self.net_pnl(mark_price),
+        }
 
     def net_pnl(self, mark_price: float) -> float:
         """Mark-to-market P&L after explicitly modelled maker fees."""

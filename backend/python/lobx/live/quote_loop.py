@@ -7,7 +7,7 @@ Responsibilities
 2. On each book update:
      a. Read best bid/ask from the C++ engine (or Python reference book as
         fallback if the C++ engine isn't compiled).
-     b. Feed the mid-price into the EWMA volatility estimator.
+         b. Feed the timestamped mid-price into the one-minute realized-volatility estimator.
      c. Build a frozen MarketState.
      d. Call strategy.on_tick(state) → QuotePair.
      e. Pass quotes to ShadowQuoteEngine.update_quotes().
@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from lobx.strategy.base import MarketState, Strategy
 from lobx.execution.shadow_engine import ExecutionAssumptions, ShadowQuoteEngine
 from lobx.analytics.volatility import EWMAVolatilityEstimator
+from lobx.analytics.realized_volatility import TimestampAwareRollingRealizedVolatility
 from lobx.risk import MarketMakingRiskConfig, MarketMakingRiskManager
 from lobx.analytics.pnl_waterfall import summarize_pnl_waterfall
 
@@ -59,12 +60,18 @@ class StrategyRunner:
         execution_assumptions: ExecutionAssumptions | None = None,
         risk_config: MarketMakingRiskConfig | None = None,
         telemetry: "TelemetryCollector | None" = None,
+        realized_vol_window_ms: int = 60_000,
     ) -> None:
         self.collector     = collector
         self.strategy      = strategy
         self.shadow_engine = ShadowQuoteEngine(assumptions=execution_assumptions or ExecutionAssumptions())
         self.risk_manager  = MarketMakingRiskManager(risk_config)
+        # Keep the EWMA estimator as a compatibility surface for callers that
+        # inspect ``vol_estimator``; strategy state uses the timestamp-aware RV.
         self.vol_estimator = EWMAVolatilityEstimator(decay=0.98)
+        self.realized_vol_estimator = TimestampAwareRollingRealizedVolatility(
+            window_ms=realized_vol_window_ms
+        )
         self.telemetry     = telemetry
 
         self._tick_count  = 0
@@ -106,6 +113,22 @@ class StrategyRunner:
 
     def _on_book_update(self, event: dict) -> None:
         """Called by Collector after every synced depth event."""
+        timestamp = int(event.get("E", 0))
+        for price_s, qty_s in event.get("b", []):
+            self.shadow_engine.on_depth_update(
+                side="bid",
+                price=float(price_s),
+                qty=float(qty_s),
+                timestamp=timestamp,
+            )
+        for price_s, qty_s in event.get("a", []):
+            self.shadow_engine.on_depth_update(
+                side="ask",
+                price=float(price_s),
+                qty=float(qty_s),
+                timestamp=timestamp,
+            )
+
         bid_info, ask_info = self._get_best_bid_ask()
         if bid_info is None or ask_info is None:
             return   # book not ready yet
@@ -114,26 +137,28 @@ class StrategyRunner:
         ask_p, ask_q = ask_info
         mid = (bid_p + ask_p) / 2.0
         self.shadow_engine.update_market_context(
-            timestamp=int(event.get("E", 0)),
+            timestamp=timestamp,
             mid=mid,
             best_bid=bid_p,
             best_ask=ask_p,
         )
 
-        # Feed EWMA estimator.
-        vol = self.vol_estimator.update(mid)
+        # Update both estimators so the legacy public EWMA remains available,
+        # while the state consumed by strategies is timestamp-aware.
+        self.vol_estimator.update(mid)
+        vol = self.realized_vol_estimator.update(timestamp, mid)
         self._last_mid = mid
 
         # Build frozen state snapshot.
         state = MarketState.from_book(
-            timestamp=int(event.get("E", 0)),
+            timestamp=timestamp,
             best_bid=bid_p,
             best_bid_qty=bid_q,
             best_ask=ask_p,
             best_ask_qty=ask_q,
             volatility=vol,
             inventory=self.shadow_engine.inventory.position,
-            log_return=self.vol_estimator.last_log_return,
+            log_return=self.realized_vol_estimator.last_log_return,
         )
 
         # Risk is updated before submitting a new quote. It is deliberately
@@ -226,6 +251,18 @@ class StrategyRunner:
     def _on_trade(self, trade: "TradeTick") -> None:
         """Called by Collector after every parsed trade tick."""
         self.shadow_engine.on_trade(trade)
+        hawkes_decision = self.risk_manager.on_trade(trade)
+        if hawkes_decision is not None:
+            self.shadow_engine.emit_event({
+                "event_type": "HAWKES_DECISION",
+                "timestamp": hawkes_decision.timestamp_ms,
+                "intensity": hawkes_decision.intensity,
+                "ratio": hawkes_decision.ratio,
+                "regime": hawkes_decision.regime.value,
+                "cooldown_active": hawkes_decision.cooldown_active,
+                "quotes_pulled": hawkes_decision.quotes_pulled,
+                "spread_multiplier": hawkes_decision.spread_multiplier,
+            })
         if self.telemetry is not None and self._last_mid is not None:
             from lobx.terminal.bridge import publish_execution
             publish_execution(

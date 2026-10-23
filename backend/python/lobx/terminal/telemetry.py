@@ -52,6 +52,12 @@ class StrategySnapshot:
     sigma: float | None = None
     tau: float | None = None
     hawkes_intensity: float | None = None
+    variance_term: float | None = None
+    kappa_term: float | None = None
+    spread_total: float | None = None
+    sigma_log: float | None = None
+    sigma_usd: float | None = None
+    time_remaining: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
 

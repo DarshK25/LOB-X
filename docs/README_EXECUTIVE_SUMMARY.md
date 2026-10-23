@@ -40,7 +40,7 @@ In this summary, **implemented** means executable logic exists in the reviewed s
 | Historical replay | Timestamp-ordered depth/trade processing, quote cadence, fees, flattening, reports | Implemented with explicit fill-model assumptions |
 | Shadow execution and inventory | Hypothetical fills, latency, partial fills, queue-ahead approximation, average-cost P&L | Implemented; does not reconstruct true exchange queue priority |
 | Strategies and risk | Fixed spread, inventory skew, AS, no-trade baseline, position/order/drawdown limits | Implemented; AS calibration and volatility units need further work |
-| Quant models and analytics | AS formulas, simplified Almgren–Chriss executor, Hawkes models, spread, returns, volatility, OBI, OFI, liquidity | Research utilities exist; several are standalone or duplicated across older/newer paths |
+| Quant models and analytics | AS formulas, Hawkes models, spread, returns, volatility, OBI, OFI, liquidity, and an Almgren–Chriss-style unwind planner | Research utilities exist; the unwind component plans reduce-only slices but does not submit orders |
 | FastAPI | Health, book snapshot, order submission, cancellation, WebSocket snapshots | REST and WebSocket use different order books |
 | Terminal dashboard | L2 display, candles, trade feed, microstructure metrics, quote preview | Implemented in scripts/lobx_cli.py |
 | React frontend | Empty charts/components/hooks/pages/services/store/types/utils folders | No runnable browser application |
@@ -111,7 +111,7 @@ The historical backtest closes remaining inventory at the final best bid/ask whe
 - **Inventory skew:** shifts both quotes away from accumulated inventory to encourage position reduction.
 - **Avellaneda–Stoikov:** computes an inventory-adjusted reservation price and a model-based spread. Default gamma and kappa are scenario placeholders.
 - **No-trade:** never quotes and provides a zero-P&L accounting benchmark.
-- **Almgren–Chriss:** supplies an inventory trajectory and simplified child-order executor; it is not integrated into the main historical market-making runner.
+- **Almgren–Chriss-style unwind:** supplies a reduce-only inventory trajectory/planner; it is not an exchange-order executor.
 - **Hawkes:** supplies event-intensity, simulation, and calibration utilities; the terminal gauge is a separate heuristic implementation.
 
 The AS pricing equations are present, but the live/replay volatility estimator returns per-update log-return volatility while remaining horizon is measured in seconds. A consistent price-volatility and time-unit convention is needed before interpreting inventory skew or spread output as calibrated behavior.

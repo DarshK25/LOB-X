@@ -14,7 +14,11 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend" / "python"))
-from lobx.analytics.calibration import empirical_fill_curve, fit_kappa_from_fill_curve
+from lobx.analytics.calibration import (
+    empirical_fill_curve,
+    fit_kappa_from_fill_curve,
+    write_calibration_artifact,
+)
 
 
 def readable_parquet(paths: list[Path]) -> Path:
@@ -73,13 +77,19 @@ def calibrate_sigma(trades: pd.DataFrame) -> dict:
     return {"sigma_per_trade_step": sigma_tick, "sigma_per_sqrt_second": sigma_second, "median_dt_sec": median_dt}
 
 
-def run_analysis(data_dirs: list[Path], sample_interval_ms: int = 1_000) -> dict:
+def run_analysis(
+    data_dirs: list[Path] | None = None,
+    sample_interval_ms: int = 1_000,
+    artifact_output: Path | None = None,
+) -> dict:
+    data_dirs = data_dirs or [Path("data/raw")]
     all_curves = []
     total_depth = 0
     total_trades = 0
     tick_size = None
     sigma = None
     trades_file_list = []
+    depth_file_list = []
     
     print("=" * 72)
     print("LOB-X Offline Market Analytics & Calibration (real collected data)")
@@ -102,6 +112,7 @@ def run_analysis(data_dirs: list[Path], sample_interval_ms: int = 1_000) -> dict
 
         print(f"Reading {data_dir.name}: {trades_file.name}, {depth_file.name}")
         trades_file_list.append(trades_file)
+        depth_file_list.append(depth_file)
         
         raw_file = data_dir / trades_file.name.replace("_clean", "")
         if raw_file.exists():
@@ -126,6 +137,9 @@ def run_analysis(data_dirs: list[Path], sample_interval_ms: int = 1_000) -> dict
     # Pool the curves
     pooled_curve = pd.concat(all_curves).groupby("distance_usd", as_index=False).sum()
     pooled_curve["fill_rate_per_quote_second"] = pooled_curve["fill_count"] / pooled_curve["exposure_quote_seconds"]
+    populated_bucket_count = int(
+        ((pooled_curve["fill_count"] >= 20) & (pooled_curve["fill_rate_per_quote_second"] > 0)).sum()
+    )
     print("\n=== Kappa Calibration — Real Quote-Exposure Data ===")
     print(f"Source rows (pooled): {total_depth:,} depth updates, {total_trades:,} trades")
     print("\nBucket Diagnostics (distance in USD, 0.001 sub-tick resolution):")
@@ -138,17 +152,46 @@ def run_analysis(data_dirs: list[Path], sample_interval_ms: int = 1_000) -> dict
     except ValueError as e:
         print(f"\n[!] KAPPA FIT FAILED: {e}")
         print("Gamma cannot be derived. Exiting.")
+        if artifact_output is not None and sigma is not None:
+            source_files = {
+                **{f"trades_{index}": path for index, path in enumerate(trades_file_list)},
+                **{f"depth_{index}": path for index, path in enumerate(depth_file_list)},
+            }
+            write_calibration_artifact(
+                artifact_output,
+                sigma=float(sigma["sigma_per_sqrt_second"]),
+                kappa=0.0,
+                source_files=source_files,
+                units={
+                    "sigma": "log_return_per_sqrt_second",
+                    "kappa": "1/USD",
+                    "distance": "USD",
+                    "timestamp": "milliseconds_since_epoch",
+                },
+                 bucket_count=populated_bucket_count,
+                r_squared=None,
+                p_value=None,
+                valid=False,
+                usable=False,
+                validity_reason=str(e),
+            )
+            print(f"Unusable calibration artifact saved: {artifact_output}")
         raise SystemExit(1)
     print(f"Tick size inferred: {tick_size:g} USD; fit distance unit: USD (0.001 sub-tick resolution)")
     print(f"kappa      : {fit['kappa']:.8f} per USD")
     print(f"R-squared  : {fit['r_squared']:.6f}")
     print(f"p-value    : {fit['p_value']:.6g}")
     print(f"n points   : {fit['n_points']}")
+    print("95% time-block bootstrap CI (60 s, 1000 reps): NOT COMPUTED")
+    print(
+        "CALIBRATION STATUS: NOT CALIBRATED "
+        "(strict gate requires >=8 buckets, p<0.05, positive CI, upper/lower<=5)"
+    )
     print("Curve saved: reports/fill_curve_real_data.csv")
 
     max_inventory = 10.0
     gamma = 1.0 / (max_inventory * fit["kappa"])
-    print("\n=== Gamma — Derived from Kappa ===")
+    print("\n=== Gamma — Explicit Design Heuristic (not calibrated) ===")
     print(f"Assumed max inventory : {max_inventory:.1f} BTC")
     print(f"Kappa used (real fit) : {fit['kappa']:.8f} per USD")
     print(f"Derived gamma         : {gamma:.8f}")
@@ -156,8 +199,53 @@ def run_analysis(data_dirs: list[Path], sample_interval_ms: int = 1_000) -> dict
     if gamma < 0.01 or gamma > 2.0:
         print(f"\n[WARNING] Derived gamma {gamma:.3f} falls far outside the [0.01, 0.9] range")
         print("identified by Falces Marín et al. (2022) for BTC-USD. The calibration may be unstable.")
-        
-    return {"trades_files": [str(p) for p in trades_file_list], "sigma": sigma, "kappa": fit, "gamma": gamma, "max_inventory": max_inventory, "tick_size": tick_size}
+
+    artifact_path = None
+    if artifact_output is not None:
+        source_files = {
+            **{f"trades_{index}": path for index, path in enumerate(trades_file_list)},
+            **{f"depth_{index}": path for index, path in enumerate(depth_file_list)},
+        }
+        write_calibration_artifact(
+            artifact_output,
+            sigma=float(sigma["sigma_per_sqrt_second"]),
+            kappa=float(fit["kappa"]),
+            source_files=source_files,
+            units={
+                "sigma": "log_return_per_sqrt_second",
+                "kappa": "1/USD",
+                "distance": "USD",
+                "timestamp": "milliseconds_since_epoch",
+            },
+             bucket_count=int(fit["n_points"]),
+            r_squared=float(fit["r_squared"]),
+            p_value=float(fit["p_value"]),
+            valid=None,
+            usable=None,
+            validity_reason=(
+                "strict R-03 calibration gate failed: requires >=8 buckets, p<0.05, "
+                "and a positive 95% time-block bootstrap CI with upper/lower<=5"
+            ),
+            metadata={
+                "gamma_assumption": gamma,
+                "max_inventory_btc": max_inventory,
+                "sample_interval_ms": sample_interval_ms,
+                "fit_points": fit["n_points"],
+            },
+        )
+        artifact_path = str(artifact_output)
+        print(f"Calibration artifact saved: {artifact_output}")
+
+    return {
+        "trades_files": [str(p) for p in trades_file_list],
+        "depth_files": [str(p) for p in depth_file_list],
+        "sigma": sigma,
+        "kappa": fit,
+        "gamma": gamma,
+        "max_inventory": max_inventory,
+        "tick_size": tick_size,
+        "calibration_artifact": artifact_path,
+    }
 
 
 def main() -> None:
@@ -170,6 +258,10 @@ def main() -> None:
              "Increase to 10000 for large overnight files to reduce computation time while "
              "still producing a statistically valid kappa fit.",
     )
+    parser.add_argument(
+        "--artifact-output", type=Path, default=None,
+        help="Write a versioned calibration artifact with source hashes",
+    )
     args = parser.parse_args()
     
     dirs = [args.data_dir]
@@ -177,7 +269,11 @@ def main() -> None:
         dirs = [Path("data/raw"), Path("data/fresh_calibration"), Path("data/raw_watch")]
         
     try:
-        run_analysis(dirs, sample_interval_ms=args.sample_interval)
+        run_analysis(
+            dirs,
+            sample_interval_ms=args.sample_interval,
+            artifact_output=args.artifact_output,
+        )
     except Exception as exc:
         print(f"CALIBRATION FAILED: {type(exc).__name__}: {exc}")
         raise SystemExit(1)

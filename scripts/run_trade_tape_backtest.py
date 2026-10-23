@@ -21,8 +21,8 @@ Execution rules are intentionally explicit:
 * fills occur at the strategy quote price, with no queue model because the files
   have no L2/L3 depth;
 * quote activation latency defaults to 100 ms;
-* no maker/taker fees are invented because the input files do not contain an
-  account fee schedule;
+* maker/taker fees default to zero because the input files do not contain an
+  account fee schedule; explicit CLI assumptions may be supplied;
 * inventory is not forcibly flattened at the end; final P&L is marked at the
   final observed trade price.
 
@@ -48,7 +48,8 @@ _BACKEND = Path(__file__).resolve().parents[1] / "backend" / "python"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from lobx.analytics.volatility import EWMAVolatilityEstimator
+from lobx.analytics.realized_volatility import TimestampAwareRollingRealizedVolatility
+from lobx.analytics.pnl_summary import summarize_fills
 from lobx.execution.inventory import InventoryTracker
 from lobx.execution.portfolio import PortfolioEngine
 from lobx.market_data.trade_stream import TradeTick
@@ -97,9 +98,13 @@ class TradeTapePaperBroker:
         fills_path: Path,
         latency_ms: int,
         risk_config: MarketMakingRiskConfig,
+        maker_fee_rate: float = 0.0,
+        taker_fee_rate: float = 0.0,
     ) -> None:
         self.strategy_name = strategy_name
         self.latency_ms = latency_ms
+        self.maker_fee_rate = maker_fee_rate
+        self.taker_fee_rate = taker_fee_rate
         self.portfolio = PortfolioEngine()
         self.risk = MarketMakingRiskManager(risk_config)
         self.bid: TapeOrder | None = None
@@ -113,6 +118,7 @@ class TradeTapePaperBroker:
         self.peak_equity = 0.0
         self.risk_block_events = 0
         self.last_risk_reason: str | None = None
+        self.fill_records: list[dict] = []
         self._fills_file = fills_path.open("w", newline="", encoding="utf-8")
         self._fills_writer = csv.DictWriter(
             self._fills_file,
@@ -165,12 +171,21 @@ class TradeTapePaperBroker:
             if side == "buy"
             else (order.price - trade.price) * available
         )
-        self.portfolio.on_fill(side, order.price, available, fee=0.0)
+        fee = order.price * available * self.maker_fee_rate
+        self.portfolio.on_fill(side, order.price, available, fee=fee)
         order.remaining_qty -= available
         self.fills += 1
         self.maker_filled_qty += available
         self.turnover += order.price * available
         self.execution_edge += edge
+        self.fill_records.append({
+            "side": side,
+            "price": order.price,
+            "qty": available,
+            "is_maker": True,
+            "timestamp": trade.event_time,
+            "trade_id": trade.trade_id,
+        })
         self._fills_writer.writerow(
             {
                 "strategy": self.strategy_name,
@@ -258,7 +273,13 @@ class TradeTapePaperBroker:
 
     def summary(self, *, rows: int, first_timestamp: int, last_timestamp: int) -> dict:
         final_price = getattr(self, "last_price", 0.0)
-        return {
+        pnl_summary = summarize_fills(
+            self.fill_records,
+            final_mid=final_price,
+            maker_bps=self.maker_fee_rate * 10_000.0,
+            taker_bps=self.taker_fee_rate * 10_000.0,
+        )
+        summary = {
             "strategy": self.strategy_name,
             "rows_processed": rows,
             "first_timestamp_ms": first_timestamp,
@@ -273,6 +294,8 @@ class TradeTapePaperBroker:
             "gross_pnl": self.portfolio.gross_pnl(final_price),
             "net_pnl": self.net_pnl(final_price),
             "fees_paid": self.portfolio.fees,
+            "maker_fee_bps": self.maker_fee_rate * 10_000.0,
+            "taker_fee_bps": self.taker_fee_rate * 10_000.0,
             "max_abs_position": self.max_abs_position,
             "average_inventory": self.inventory.average_inventory,
             "max_drawdown": self.max_drawdown,
@@ -281,9 +304,13 @@ class TradeTapePaperBroker:
             "risk_block_events": self.risk_block_events,
             "last_risk_reason": self.last_risk_reason,
             "fill_model": "actual aggTrade crossing a previously active model quote",
-            "fee_model": "zero; no account fee schedule is present in input data",
+            "fee_model": "explicit maker/taker assumptions; no fee schedule is present in input data",
             "flattening": "disabled; final position is marked, not forcibly liquidated",
         }
+        summary.update(pnl_summary)
+        # Keep the legacy aggregate name alongside the fee-aware summary.
+        summary["fees_paid"] = summary["fees"]
+        return summary
 
     def close(self) -> None:
         self._fills_file.close()
@@ -414,6 +441,8 @@ def _run_file(
     max_position: float,
     max_drawdown: float,
     progress_every: int,
+    maker_fee_rate: float = 0.0,
+    taker_fee_rate: float = 0.0,
 ) -> dict:
     metadata = _validate_input(path)
     first_ts = int(metadata["first_timestamp_ms"])
@@ -431,16 +460,18 @@ def _run_file(
     )
     brokers: dict[str, TradeTapePaperBroker] = {}
     strategies: dict[str, Strategy] = {}
-    volatilities: dict[str, EWMAVolatilityEstimator] = {}
+    volatilities: dict[str, TimestampAwareRollingRealizedVolatility] = {}
     for name, factory in factories.items():
         brokers[name] = TradeTapePaperBroker(
             strategy_name=name,
             fills_path=file_output / f"{name}_fills.csv",
             latency_ms=latency_ms,
             risk_config=risk_config,
+            maker_fee_rate=maker_fee_rate,
+            taker_fee_rate=taker_fee_rate,
         )
         strategies[name] = factory()
-        volatilities[name] = EWMAVolatilityEstimator(decay=0.98)
+        volatilities[name] = TimestampAwareRollingRealizedVolatility(window_ms=60_000)
 
     stats = {
         "rows_processed": 0,
@@ -482,7 +513,7 @@ def _run_file(
                 for name, broker in brokers.items():
                     broker.last_price = trade.price
                     broker.process_trade(trade)
-                    volatility = volatilities[name].update(trade.price)
+                    volatility = volatilities[name].update(trade.event_time, trade.price)
                     state = _build_tape_state(
                         trade,
                         volatility=volatility,
@@ -526,7 +557,10 @@ def _run_file(
             "quote_reference": "observed last trade price",
             "fill_source": "subsequent observed aggTrade rows only",
             "latency_ms": latency_ms,
-            "maker_fee_rate": 0.0,
+            "maker_fee_rate": maker_fee_rate,
+            "taker_fee_rate": taker_fee_rate,
+            "maker_fee_bps": maker_fee_rate * 10_000.0,
+            "taker_fee_bps": taker_fee_rate * 10_000.0,
             "queue_model": "not modeled; unavailable from aggTrades",
             "flatten_at_end": False,
             "max_position": max_position,
@@ -534,7 +568,7 @@ def _run_file(
             "as_gamma": 0.1,
             "as_kappa": 1.5,
             "as_kappa_status": "scenario assumption, not fitted from these files",
-            "volatility": "EWMA of log returns between every observed trade",
+            "volatility": "timestamp-aware rolling log-volatility per sqrt-second",
         },
         "observed_statistics": stats,
         "strategies": strategy_summaries,
@@ -573,6 +607,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-position", type=float, default=0.005)
     parser.add_argument("--max-drawdown", type=float, default=25.0)
+    parser.add_argument("--maker-fee-rate", "--maker-fee", dest="maker_fee_rate", type=float, default=0.0)
+    parser.add_argument("--taker-fee-rate", "--taker-fee", dest="taker_fee_rate", type=float, default=0.0)
+    parser.add_argument("--maker-fee-bps", type=float, default=None)
+    parser.add_argument("--taker-fee-bps", type=float, default=None)
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -596,6 +634,18 @@ def main() -> None:
         raise SystemExit("--latency-ms cannot be negative")
     if args.progress_every < 0:
         raise SystemExit("--progress-every cannot be negative")
+    maker_fee_rate = (
+        args.maker_fee_bps / 10_000.0
+        if args.maker_fee_bps is not None
+        else args.maker_fee_rate
+    )
+    taker_fee_rate = (
+        args.taker_fee_bps / 10_000.0
+        if args.taker_fee_bps is not None
+        else args.taker_fee_rate
+    )
+    if maker_fee_rate < 0.0 or taker_fee_rate < 0.0:
+        raise SystemExit("fee rates cannot be negative")
 
     paths = args.file or sorted(args.data_dir.glob("*.parquet"))
     if not paths:
@@ -613,7 +663,8 @@ def main() -> None:
         print(f"  - {path}")
     print("Execution: actual aggTrades only; no synthetic depth; no forced flattening")
     print(
-        f"Assumptions: latency={args.latency_ms}ms, fees=0, "
+        f"Assumptions: latency={args.latency_ms}ms, maker_fee={maker_fee_rate * 10_000.0:g}bps, "
+        f"taker_fee={taker_fee_rate * 10_000.0:g}bps, "
         f"max_position={args.max_position}, max_drawdown={args.max_drawdown}"
     )
 
@@ -629,6 +680,8 @@ def main() -> None:
                 max_position=args.max_position,
                 max_drawdown=args.max_drawdown,
                 progress_every=args.progress_every,
+                maker_fee_rate=maker_fee_rate,
+                taker_fee_rate=taker_fee_rate,
             )
         )
         print(f"Completed: {path.name}")
@@ -646,8 +699,14 @@ def main() -> None:
                     "turnover": 0.0,
                     "execution_edge": 0.0,
                     "realized_pnl": 0.0,
+                    "gross_pnl": 0.0,
                     "net_pnl": 0.0,
                     "fees_paid": 0.0,
+                    "maker_fees": 0.0,
+                    "taker_fees": 0.0,
+                    "fees": 0.0,
+                    "traded_notional": 0.0,
+                    "reconciliation_residual": 0.0,
                     "max_abs_position": 0.0,
                     "max_drawdown": 0.0,
                     "risk_halted_datasets": 0,
@@ -662,8 +721,14 @@ def main() -> None:
                 "turnover",
                 "execution_edge",
                 "realized_pnl",
+                "gross_pnl",
                 "net_pnl",
                 "fees_paid",
+                "maker_fees",
+                "taker_fees",
+                "fees",
+                "traded_notional",
+                "reconciliation_residual",
                 "risk_block_events",
             ):
                 target[key] += summary[key]
@@ -672,6 +737,20 @@ def main() -> None:
             )
             target["max_drawdown"] = max(target["max_drawdown"], summary["max_drawdown"])
             target["risk_halted_datasets"] += int(summary["risk_halted"])
+
+    for summary in combined.values():
+        notional = summary["traded_notional"]
+        gross = summary["gross_pnl"]
+        summary["breakeven_fee_bps"] = gross / notional * 10_000.0 if notional else 0.0
+        summary["fee_sensitivity"] = {
+            bps: gross - notional * bps / 10_000.0
+            for bps in (0, 1, 10)
+        }
+        summary["fee_sensitivity_bps"] = dict(summary["fee_sensitivity"])
+        summary["fee_sensitivity_labels"] = {
+            f"{bps}_bps": value for bps, value in summary["fee_sensitivity"].items()
+        }
+        summary["pnl_reconciled"] = abs(summary["reconciliation_residual"]) <= 1e-12
 
     manifest = {
         "runner": "scripts/run_trade_tape_backtest.py",
