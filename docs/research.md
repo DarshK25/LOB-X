@@ -37,7 +37,11 @@ that worst-case score is non-positive. In two rolling selloff folds it skipped
 the fold where the ordinary alpha-gated strategy lost −$0.054 and traded the
 fold where it made +$0.064. Pooled robust-gated PnL was therefore +$0.064, but
 on only 14 fills: encouraging risk selection, not sufficient promotion
-evidence.
+evidence. In a separate two-fold volatile-window walk-forward, both inner
+robust scores were negative, so the gate correctly abstained in both outer
+folds ($0.000, zero fills) while the ordinary alpha-gated variant lost
+−$0.525 and −$0.013. This supports the gate as a loss-avoidance rule, but
+does not establish that it can identify enough profitable opportunities.
 
 ## Setup
 
